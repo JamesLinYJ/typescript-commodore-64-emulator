@@ -1,0 +1,98 @@
+// +-------------------------------------------------------------------------
+//
+//   TypeScript Commodore 64 模拟器 - SID 芯片行为测试
+//
+//   文件:       Sid.test.ts
+//
+//   日期:       2026年07月16日
+//   作者:       OpenAI Codex
+// --------------------------------------------------------------------------
+
+import { describe, expect, it } from 'vitest';
+
+import { Sid } from '../../src/devices/Sid';
+import { SID_MODEL } from '../../src/devices/SidModel';
+import { SID_CONTROL_BIT, SID_FILTER_BIT, SID_REGISTER } from '../../src/devices/sidRegisters';
+
+describe('Sid', () => {
+  it('maps voice frequency, pulse width, and envelope registers', () => {
+    const sid = new Sid();
+    sid.write(0x00, 0x34);
+    sid.write(0x01, 0x12);
+    sid.write(0x02, 0xcd);
+    sid.write(0x03, 0x0a);
+    sid.write(0x05, 0x28);
+    sid.write(0x06, 0xb4);
+
+    expect(sid.getVoice(0)).toMatchObject({
+      frequency: 0x1234,
+      pulseWidth: 0x0acd,
+      attackDecay: 0x28,
+      sustainRelease: 0xb4,
+    });
+  });
+
+  it('clocks the gate-controlled ADSR envelope', () => {
+    const sid = new Sid();
+    const powerOnEnvelope = sid.getVoice(0).envelope;
+    sid.write(0x05, 0x00);
+    sid.write(0x06, 0xf0);
+    sid.write(0x04, SID_CONTROL_BIT.gate | SID_CONTROL_BIT.sawtooth);
+    sid.tick(90);
+
+    expect(sid.getVoice(0).envelope).toBeGreaterThan(powerOnEnvelope);
+    const envelopeAfterAttack = sid.getVoice(0).envelope;
+
+    sid.write(0x04, SID_CONTROL_BIT.sawtooth);
+    sid.tick(180);
+    expect(sid.getVoice(0).envelope).toBeLessThan(envelopeAfterAttack);
+  });
+
+  it('generates bounded PCM samples from three clocked voices', () => {
+    const sid = new Sid(false, { processorClockHz: 100_000, sampleRateHz: 10_000 });
+    sid.write(0x00, 0xff);
+    sid.write(0x01, 0x7f);
+    sid.write(0x05, 0x00);
+    sid.write(0x06, 0xf0);
+    sid.write(0x04, SID_CONTROL_BIT.gate | SID_CONTROL_BIT.sawtooth);
+    sid.write(SID_REGISTER.filterModeVolume, SID_FILTER_BIT.lowPass | 0x0f);
+    sid.tick(2_000);
+    const samples = sid.drainSamples();
+
+    expect(samples).toHaveLength(200);
+    expect(samples.some((sample) => sample !== 0)).toBe(true);
+    expect(samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1)).toBe(true);
+  });
+
+  it('models the write-only data bus latch and readable paddle registers', () => {
+    const sid = new Sid();
+    sid.write(0x00, 0x73);
+    expect(sid.read(0x00)).toBe(0x73);
+    sid.tick(0x1cff);
+    expect(sid.read(0x00)).toBe(0x73);
+    sid.tick(1);
+    expect(sid.read(0x00)).toBe(0x00);
+
+    sid.setPaddleInputs(0x12, 0x34);
+    expect(sid.read(SID_REGISTER.paddleX)).toBe(0x12);
+    expect(sid.read(SID_REGISTER.paddleY)).toBe(0x34);
+  });
+
+  it('delays MOS 8580 register writes by one chip cycle', () => {
+    const sid = new Sid(false, { model: SID_MODEL.mos8580 });
+
+    sid.write(0x00, 0x34);
+
+    expect(sid.getVoice(0).frequency).toBe(0);
+    expect(sid.read(0x00)).toBe(0x34);
+    sid.tick(1);
+    expect(sid.getVoice(0).frequency).toBe(0x34);
+  });
+
+  it('rejects two unscheduled MOS 8580 writes in the same chip cycle', () => {
+    const sid = new Sid(false, { model: SID_MODEL.mos8580 });
+    sid.write(0x00, 0x34);
+
+    expect(() => sid.write(0x01, 0x12)).toThrow(/write pipeline already contains/);
+  });
+});

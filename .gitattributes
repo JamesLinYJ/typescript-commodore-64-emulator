@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+*.bin binary
+*.crt binary
+*.d64 binary
+*.g64 binary
+*.png binary
+*.prg binary
+*.tap binary
+*.zip binary

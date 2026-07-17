@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "vite.config.ts",
+    "eslint.config.js",
+    "tools",
+    "src/core/basicStartup.ts",
+    "src/core/C64Machine.ts",
+    "src/core/CpuBusArbitrationInvariantError.ts",
+    "src/core/cpu",
+    "src/core/memory",
+    "src/devices",
+    "src/media",
+    "src/peripherals",
+    "src/shared",
+    "src/video/PalFrameScheduler.ts",
+    "src/video/palVideoStandard.ts",
+    "src/video/PixelFrameBuffer.ts"
+  ]
+}
