@@ -193,7 +193,6 @@ export class Mos6526 extends IoDevice {
     for (let cycle = 0; cycle < elapsedCycles; cycle += 1) {
       this.runProcessorClockCycle();
     }
-    this.synchronizeTimerStartBits();
     if (timerOutputRoutedToPortB) {
       const portBOutputAfter = this.portBOutputPins;
       if (portBOutputAfter !== portBOutputBefore) {
@@ -211,7 +210,6 @@ export class Mos6526 extends IoDevice {
     const timerOutputRoutedToPortB = this.timerOutputRoutedToPortB;
     const portBOutputBefore = timerOutputRoutedToPortB ? this.portBOutputPins : 0;
     this.runProcessorClockCycle();
-    this.synchronizeTimerStartBits();
     if (timerOutputRoutedToPortB) {
       const portBOutputAfter = this.portBOutputPins;
       if (portBOutputAfter !== portBOutputBefore) {
@@ -233,6 +231,7 @@ export class Mos6526 extends IoDevice {
       const timerAUnderflow =
         this.timerA.inputMode === CIA_TIMER_B_INPUT_MODE.countPin && this.timerA.tickCycle(true);
       if (timerAUnderflow) {
+        this.synchronizeStoppedTimerStartBit(CIA_REGISTER.timerAControl, this.timerA.running);
         this.raiseInterrupt(CIA_INTERRUPT_BIT.timerA);
         this.clockSerialOutput();
       }
@@ -243,11 +242,11 @@ export class Mos6526 extends IoDevice {
             this.countPinHigh)) &&
           timerAUnderflow);
       if (timerBStep && this.timerB.tickCycle(true)) {
+        this.synchronizeStoppedTimerStartBit(CIA_REGISTER.timerBControl, this.timerB.running);
         this.raiseInterrupt(CIA_INTERRUPT_BIT.timerB);
       }
       this.runInterruptPipelineCycle();
     }
-    this.synchronizeTimerStartBits();
     if (timerOutputRoutedToPortB) {
       const portBOutputAfter = this.portBOutputPins;
       if (portBOutputAfter !== portBOutputBefore) {
@@ -468,18 +467,10 @@ export class Mos6526 extends IoDevice {
     this.onPortBOutputChanged(this.portBOutputPins);
   }
 
-  private synchronizeTimerStartBits(): void {
-    this.synchronizeTimerStartBit(CIA_REGISTER.timerAControl, this.timerA.running);
-    this.synchronizeTimerStartBit(CIA_REGISTER.timerBControl, this.timerB.running);
-  }
-
-  private synchronizeTimerStartBit(register: number, running: boolean): void {
+  private synchronizeStoppedTimerStartBit(register: number, running: boolean): void {
+    if (running) return;
     const control = this.registers[register] ?? 0;
-    const startBitSet = (control & CIA_TIMER_CONTROL_BIT.start) !== 0;
-    if (startBitSet === running) return;
-    this.registers[register] = running
-      ? control | CIA_TIMER_CONTROL_BIT.start
-      : control & ~CIA_TIMER_CONTROL_BIT.start;
+    this.registers[register] = control & ~CIA_TIMER_CONTROL_BIT.start;
   }
 
   private writeSerialData(index: number, value: number): void {
@@ -602,6 +593,7 @@ export class Mos6526 extends IoDevice {
     }
     const timerAUnderflow = this.timerA.tickCycle();
     if (timerAUnderflow) {
+      this.synchronizeStoppedTimerStartBit(CIA_REGISTER.timerAControl, this.timerA.running);
       this.raiseInterrupt(CIA_INTERRUPT_BIT.timerA);
       this.clockSerialOutput();
     }
@@ -610,6 +602,7 @@ export class Mos6526 extends IoDevice {
       (this.timerB.inputMode === CIA_TIMER_B_INPUT_MODE.timerAUnderflowWhileCountHigh &&
         this.countPinHigh);
     if (this.timerB.tickCycle(cascadeTimerB && timerAUnderflow)) {
+      this.synchronizeStoppedTimerStartBit(CIA_REGISTER.timerBControl, this.timerB.running);
       this.timerBReadCollision =
         this.model === MOS_6526_MODEL.original &&
         this.lastInterruptControlReadCycle === this.elapsedCycleCount - 1;
