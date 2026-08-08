@@ -98,19 +98,19 @@ export class Sid6581Filter {
       }
     }
 
-    this.lowPassVoltage = this.model.integrate(
+    this.lowPassVoltage = this.model.integrateUnchecked(
       this.bandPassVoltage,
       this.lowPassIntegrator,
       this.cutoffVoltageSquared,
     );
-    this.bandPassVoltage = this.model.integrate(
+    this.bandPassVoltage = this.model.integrateUnchecked(
       this.highPassVoltage,
       this.bandPassIntegrator,
       this.cutoffVoltageSquared,
     );
     const resonance = (resonanceRouting >> 4) & SID_MASK.resonance;
-    const resonanceVoltage = this.model.resonanceGain(resonance, this.bandPassVoltage);
-    this.highPassVoltage = this.model.sumFilterInputs(
+    const resonanceVoltage = this.model.resonanceGainUnchecked(resonance, this.bandPassVoltage);
+    this.highPassVoltage = this.model.sumFilterInputsUnchecked(
       filterInputCount,
       resonanceVoltage + this.lowPassVoltage + filterInputVoltage,
     );
@@ -128,8 +128,8 @@ export class Sid6581Filter {
       mixerInputVoltage += this.highPassVoltage;
     }
 
-    const mixedVoltage = this.model.mixAudioInputs(mixerInputCount, mixerInputVoltage);
-    return this.model.applyVolume(modeVolume & SID_MASK.volume, mixedVoltage);
+    const mixedVoltage = this.model.mixAudioInputsUnchecked(mixerInputCount, mixerInputVoltage);
+    return this.model.applyVolumeUnchecked(modeVolume & SID_MASK.volume, mixedVoltage);
   }
 
   private updateCutoff(cutoff: number): void {

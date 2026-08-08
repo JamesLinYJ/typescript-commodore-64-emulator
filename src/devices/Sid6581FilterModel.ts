@@ -190,6 +190,15 @@ export class Sid6581FilterModel {
     return this.lookupGain((~resonance & 0x0f) * NORMALIZED_VOLTAGE_LEVEL_COUNT + bandPassVoltage);
   }
 
+  /**
+   * 仅供 Sid6581Filter 内部逐周期路径调用。寄存器掩码把 resonance 限定为 0-15，
+   * 积分器输出是 0-65535 的归一化电压，因此增益表索引必在 0-1,048,575 内。
+   */
+  resonanceGainUnchecked(resonance: number, bandPassVoltage: number): number {
+    const index = (~resonance & 0x0f) * NORMALIZED_VOLTAGE_LEVEL_COUNT + bandPassVoltage;
+    return this.gain[index]!;
+  }
+
   sumFilterInputs(routedInputCount: number, voltageSum: number): number {
     return lookupTable(
       this.summer,
@@ -198,8 +207,30 @@ export class Sid6581FilterModel {
     );
   }
 
+  /**
+   * 仅供 Sid6581Filter 内部逐周期路径调用。路由最多加入四个可变输入，再加两个滤波
+   * 反馈输入，voltageSum 必在 0..(routedInputCount + 2) * 65535 的目标求和表分块内。
+   */
+  sumFilterInputsUnchecked(routedInputCount: number, voltageSum: number): number {
+    const offset =
+      ((routedInputCount * (routedInputCount + 3)) / 2) * NORMALIZED_VOLTAGE_LEVEL_COUNT;
+    return this.summer[offset + voltageSum]!;
+  }
+
   mixAudioInputs(inputCount: number, voltageSum: number): number {
     return lookupTable(this.mixer, mixerOffset(inputCount) + voltageSum, 'MOS 6581 audio mixer');
+  }
+
+  /**
+   * 仅供 Sid6581Filter 内部逐周期路径调用。混音器最多接收七个声部、外部或滤波输出，
+   * voltageSum 必在 0..inputCount * 65535 的目标混音表分块内。
+   */
+  mixAudioInputsUnchecked(inputCount: number, voltageSum: number): number {
+    const offset =
+      inputCount === 0
+        ? 0
+        : 1 + ((inputCount - 1) * inputCount * NORMALIZED_VOLTAGE_LEVEL_COUNT) / 2;
+    return this.mixer[offset + voltageSum]!;
   }
 
   applyVolume(volume: number, mixedVoltage: number): number {
@@ -209,7 +240,62 @@ export class Sid6581FilterModel {
     );
   }
 
+  /**
+   * 仅供 Sid6581Filter 内部逐周期路径调用。volume 为 0-15，mixedVoltage 为
+   * 0-65535 的归一化电压，组合索引必在增益表内。
+   */
+  applyVolumeUnchecked(volume: number, mixedVoltage: number): number {
+    return (
+      this.gain[volume * NORMALIZED_VOLTAGE_LEVEL_COUNT + mixedVoltage]! -
+      NORMALIZED_VOLTAGE_MIDPOINT
+    );
+  }
+
   integrate(
+    inputVoltage: number,
+    state: Sid6581IntegratorState,
+    cutoffVoltageSquared: number,
+  ): number {
+    if (!Number.isInteger(inputVoltage) || inputVoltage < 0 || inputVoltage > 0xffff) {
+      throw new RangeError(`MOS 6581 integrator input voltage ${inputVoltage} is outside 0-65535.`);
+    }
+    if (!Number.isInteger(state.opAmpInput) || state.opAmpInput < 0 || state.opAmpInput > 0xffff) {
+      throw new RangeError(
+        `MOS 6581 integrator op-amp voltage ${state.opAmpInput} is outside 0-65535.`,
+      );
+    }
+    if (!Number.isSafeInteger(state.capacitorVoltage)) {
+      throw new RangeError(
+        `MOS 6581 integrator capacitor voltage is not a safe integer: ${state.capacitorVoltage}.`,
+      );
+    }
+
+    const gateDrain = this.normalizedSupplyThreshold - inputVoltage;
+    const gateDrainSquared = Math.imul(gateDrain, gateDrain) >>> 0;
+    const gateLookupIndex = Math.floor(
+      (cutoffVoltageSquared + (gateDrainSquared >>> 1)) / NORMALIZED_VOLTAGE_LEVEL_COUNT,
+    );
+    if (
+      !Number.isInteger(gateLookupIndex) ||
+      gateLookupIndex < 0 ||
+      gateLookupIndex >= this.vcrGateVoltage.length
+    ) {
+      throw new RangeError(
+        `MOS 6581 VCR gate voltage index ${gateLookupIndex} is outside ` +
+          `0-${this.vcrGateVoltage.length - 1}.`,
+      );
+    }
+    return this.integrateUnchecked(inputVoltage, state, cutoffVoltageSquared);
+  }
+
+  /**
+   * 仅供 Sid6581Filter 内部逐周期路径调用。inputVoltage 为 0-61898，opAmpInput 为
+   * 0-61887，cutoffVoltageSquared 最大为 374,421,612，因此 gateLookupIndex 为
+   * 0-38480，两个 VCR 电流表索引为 0-65535。反向运放索引依赖持续演化的电容状态，
+   * 无法只凭本次输入静态界定，所以最后一次查表仍保留快速失败检查。外部调用者继续
+   * 使用上方完整检查的 integrate()。
+   */
+  integrateUnchecked(
     inputVoltage: number,
     state: Sid6581IntegratorState,
     cutoffVoltageSquared: number,
@@ -219,29 +305,15 @@ export class Sid6581FilterModel {
     const gateDrain = supplyThreshold - inputVoltage;
     const gateDrainSquared = Math.imul(gateDrain, gateDrain) >>> 0;
     const snakeDifference = (Math.imul(gateSource, gateSource) - gateDrainSquared) | 0;
-    // 平方差与电容电压已分别锁存为无符号/有符号 32 位整数；它们可直接
-    // 用移位保留算术右移语义。公开的 cutoff 参数仍用 Math.floor 保留越界检查。
     const snakeCurrent = this.normalizedSnakeCurrent * (snakeDifference >> 15);
     const gateLookupIndex = Math.floor(
       (cutoffVoltageSquared + (gateDrainSquared >>> 1)) / NORMALIZED_VOLTAGE_LEVEL_COUNT,
     );
-    const gateVoltage = lookupTable(
-      this.vcrGateVoltage,
-      gateLookupIndex,
-      'MOS 6581 VCR gate voltage',
-    );
+    const gateVoltage = this.vcrGateVoltage[gateLookupIndex]!;
     const gateSourceVoltage = Math.max(0, gateVoltage - state.opAmpInput);
     const gateDrainVoltage = Math.max(0, gateVoltage - inputVoltage);
-    const sourceCurrent = lookupTable(
-      this.vcrCurrentTerm,
-      gateSourceVoltage,
-      'MOS 6581 VCR source current',
-    );
-    const drainCurrent = lookupTable(
-      this.vcrCurrentTerm,
-      gateDrainVoltage,
-      'MOS 6581 VCR drain current',
-    );
+    const sourceCurrent = this.vcrCurrentTerm[gateSourceVoltage]!;
+    const drainCurrent = this.vcrCurrentTerm[gateDrainVoltage]!;
     const vcrCurrent = Math.imul(sourceCurrent - drainCurrent, 1 << 15);
 
     state.capacitorVoltage = (state.capacitorVoltage - snakeCurrent - vcrCurrent) | 0;
