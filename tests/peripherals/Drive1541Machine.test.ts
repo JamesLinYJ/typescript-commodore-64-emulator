@@ -64,6 +64,21 @@ describe('Drive1541Machine', () => {
     expect(machine.cpu.pc).toBe(0xc001);
   });
 
+  it('batches adjacent cycles without crossing an unrequested bus-cycle boundary', () => {
+    const program = [0xa9, 0x42, 0x8d, 0x00, 0x00, 0xea]; // LDA #$42; STA $0000; NOP
+    const batched = createMachine(program).machine;
+    const stepped = createMachine(program).machine;
+
+    expect(batched.clockCycles(5)).toBe(5);
+    for (let cycle = 0; cycle < 5; cycle += 1) expect(stepped.clockCycle()).toBe(1);
+
+    expect(batched.elapsedCycles).toBe(5);
+    expect(batched.cpu.isAtInstructionBoundary).toBe(false);
+    expect(batched.cpu.getRegisters()).toEqual(stepped.cpu.getRegisters());
+    expect(batched.memory.lastDataBusValue).toBe(stepped.memory.lastDataBusValue);
+    expect(() => batched.clockCycles(-1)).toThrow(/non-negative safe integer/);
+  });
+
   it('routes an asserted BYTE READY edge to the 6502 SO pin', () => {
     const { machine, mechanism } = createMachine();
     mechanism.mountDisk(createDisk());

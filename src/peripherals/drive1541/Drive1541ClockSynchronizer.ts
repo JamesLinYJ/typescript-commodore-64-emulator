@@ -17,15 +17,16 @@ export const DRIVE_1541_CLOCK = {
 
 export interface Drive1541ClockedMachine {
   readonly elapsedCycles: number;
-  executeInstruction(checkBreakpoints?: boolean): number;
+  clockCycle(checkBreakpoints?: boolean): number;
+  clockCycles(cycles: number, checkBreakpoints?: boolean): number;
   resetTiming(): void;
 }
 
 /**
  * 用整数有理数把 PAL C64 的 985248 Hz 时钟转换到 1541 的 1 MHz 时钟域。
  *
- * 驱动器 CPU 只能在指令边界停下，所以实际执行位置允许最多领先一条指令；累计目标时钟
- * 始终保持精确，后续主机周期会自然吸收该领先量，而不会用浮点数反复舍入。
+ * 每个目标周期只推进一个 6502 总线周期，因而 IEC 读写不会从未来的主机时间点
+ * 提前取样或发布。余数始终用整数累加，不会引入浮点漂移。
  */
 export class Drive1541ClockSynchronizer implements C64ClockedPeripheral {
   private hostClockRemainder = 0;
@@ -67,11 +68,12 @@ export class Drive1541ClockSynchronizer implements C64ClockedPeripheral {
       throw new RangeError('1541 target clock exceeded the safe integer range.');
     }
 
-    while (this.machine.elapsedCycles < this.targetDriveCycles) {
-      const elapsed = this.machine.executeInstruction(false);
-      if (elapsed <= 0) {
-        throw new Error('1541 CPU failed to advance while synchronizing its clock domain.');
-      }
+    const cyclesToRun = this.targetDriveCycles - this.machine.elapsedCycles;
+    const elapsed = this.machine.clockCycles(cyclesToRun, false);
+    if (elapsed !== cyclesToRun) {
+      throw new Error(
+        `1541 CPU clock batch advanced by ${elapsed} cycles instead of ${cyclesToRun}.`,
+      );
     }
   }
 

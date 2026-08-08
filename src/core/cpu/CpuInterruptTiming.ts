@@ -43,6 +43,15 @@ export class CpuInterruptTiming {
 
   completeInstruction(instruction: CompletedCpuInstruction): void {
     const { interruptMaskedAfter, interruptMaskedBefore, opcode } = instruction;
+    this.completeInstructionState(interruptMaskedAfter, interruptMaskedBefore, opcode);
+  }
+
+  /** CPU 热路径使用标量参数，避免每条指令创建一次瞬时状态对象。 */
+  completeInstructionState(
+    interruptMaskedAfter: boolean,
+    interruptMaskedBefore: boolean,
+    opcode: number,
+  ): void {
     this.previousMaskTransition =
       opcode === RETURN_FROM_INTERRUPT_OPCODE ||
       opcode === BREAK_OPCODE ||

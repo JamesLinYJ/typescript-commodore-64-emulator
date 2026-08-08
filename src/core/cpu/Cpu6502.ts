@@ -15,6 +15,19 @@ import { BreakpointError } from './BreakpointError';
 import { CPU_POWER_ON_STATE, CPU_RESET_SEQUENCE, CPU_VECTOR, CpuStatusFlag } from './cpuConstants';
 import { CpuInterruptTiming } from './CpuInterruptTiming';
 import { CpuOpcode, type AddressingMode } from './CpuOpcode';
+import {
+  CPU_ADDRESS_MODE as CycleAddressMode,
+  CPU_MEMORY_ACCESS as CycleMemoryAccess,
+  CPU_OPCODE_FLAG,
+  CPU_OPCODE_FLAGS,
+  CPU_OPCODE_OPERATION,
+  CPU_OPCODE_PLAN,
+  CPU_OPCODE_PLAN_ACCESS_MASK,
+  CPU_OPCODE_PLAN_ACCESS_SHIFT,
+  CPU_OPCODE_PLAN_MODE_MASK,
+  CPU_OPCODE_PLAN_MODE_SHIFT,
+  CPU_OPERATION as CycleOperation,
+} from './CpuOpcodeMetadata';
 import type { CpuRegisters } from './CpuRegisters';
 
 interface CpuEvents {
@@ -54,6 +67,12 @@ const enum CpuMemoryAccess {
   ReadModifyWrite,
 }
 
+const enum CpuCycleSequence {
+  None,
+  NonMaskableInterrupt,
+  MaskableInterrupt,
+}
+
 export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   private a = 0;
   private x = 0;
@@ -72,6 +91,22 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   private jammed = false;
   private memoryAccess = CpuMemoryAccess.Read;
   private readonly interruptTiming = new CpuInterruptTiming();
+  private cycleOpcode = 0;
+  private cycleOperation: number = CycleOperation.NOP;
+  private cycleAddressMode: number = CycleAddressMode.IMP;
+  private cycleMemoryAccess: number = CycleMemoryAccess.NONE;
+  private cyclePhase = 0;
+  private cycleCurrentCycles = 0;
+  private cycleAddress = 0;
+  private cycleBaseAddress = 0;
+  private cycleProvisionalAddress = 0;
+  private cycleLow = 0;
+  private cycleData = 0;
+  private cyclePageCrossed = false;
+  private cycleInterruptMaskedBefore = false;
+  private cycleCheckBreakpoints = false;
+  private cycleSequence = CpuCycleSequence.None;
+  private cycleSequencePhase = 0;
   pc = 0;
 
   constructor(mm: MemoryBus) {
@@ -94,6 +129,121 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   }
 
   /**
+   * 指示逐周期执行器是否停在可接收新指令或硬件中断的边界。
+   * KIL/JAM 不形成边界，必须由复位解除。
+   */
+  get isAtInstructionBoundary(): boolean {
+    return !this.jammed && this.cyclePhase === 0 && this.cycleSequence === CpuCycleSequence.None;
+  }
+
+  /**
+   * 推进一个 NMOS 6502 总线周期。
+   *
+   * 每次调用恰好执行一次 read 或 write；返回 true 表示该周期形成了新的指令
+   * 或硬件中断边界。热路径仅更新预分配的标量状态。
+   */
+  clockCycle(checkBreakpoints = false): boolean {
+    if (this.cycleSequence !== CpuCycleSequence.None) {
+      return this.tickCycleInterruptSequence();
+    }
+    if (this.jammed) {
+      this.executeJammedBusCycle();
+      return false;
+    }
+    if (this.cyclePhase === 0) {
+      const instructionAddress = this.pc;
+      this.pc = word(this.pc + 1);
+      this.cycleInterruptMaskedBefore = (this.p & CpuStatusFlag.InterruptDisable) !== 0;
+      this.interruptTiming.beginInstruction();
+      this.cycleOpcode = this.memory.read(instructionAddress);
+      this.instructionObserver?.(instructionAddress, this.cycleOpcode);
+      this.cycleOperation = CPU_OPCODE_OPERATION[this.cycleOpcode] ?? CycleOperation.JAM;
+      const plan = CPU_OPCODE_PLAN[this.cycleOpcode] ?? 0;
+      this.cycleAddressMode = (plan >>> CPU_OPCODE_PLAN_MODE_SHIFT) & CPU_OPCODE_PLAN_MODE_MASK;
+      this.cycleMemoryAccess =
+        (plan >>> CPU_OPCODE_PLAN_ACCESS_SHIFT) & CPU_OPCODE_PLAN_ACCESS_MASK;
+      this.cyclePhase = 1;
+      this.cycleCurrentCycles = 1;
+      this.cycleCheckBreakpoints = checkBreakpoints;
+      if (
+        !this.useUndocumentedOpcodes &&
+        ((CPU_OPCODE_FLAGS[this.cycleOpcode] ?? 0) & CPU_OPCODE_FLAG.UNDOCUMENTED) !== 0 &&
+        this.cycleOperation !== CycleOperation.JAM &&
+        this.cycleOperation !== CycleOperation.SBC
+      ) {
+        this.usedUndocumentedOpcode();
+      }
+      return false;
+    }
+
+    this.cycleCurrentCycles += 1;
+    return this.cycleMemoryAccess === CycleMemoryAccess.NONE
+      ? this.tickCycleSpecial()
+      : this.tickCycleAddressed();
+  }
+
+  /** 从指令边界启动七周期 NMI 微序列。 */
+  beginNonMaskableInterruptSequence(): boolean {
+    if (this.jammed) return false;
+    this.beginCycleInterruptSequence(CpuCycleSequence.NonMaskableInterrupt);
+    return true;
+  }
+
+  /** 从已通过外部采样裁决的指令边界启动七周期 IRQ 微序列。 */
+  beginMaskableInterruptSequence(): boolean {
+    if (this.jammed) return false;
+    this.beginCycleInterruptSequence(CpuCycleSequence.MaskableInterrupt);
+    return true;
+  }
+
+  private beginCycleInterruptSequence(sequence: CpuCycleSequence): void {
+    if (!this.isAtInstructionBoundary) {
+      throw new Error('CPU interrupt sequence must begin at an instruction boundary.');
+    }
+    this.cycleSequence = sequence;
+    this.cycleSequencePhase = 0;
+    this.cycleCurrentCycles = 0;
+  }
+
+  private tickCycleInterruptSequence(): boolean {
+    const phase = ++this.cycleSequencePhase;
+    this.cycleCurrentCycles += 1;
+    if (phase <= 2) {
+      this.memory.read(this.pc);
+      return false;
+    }
+    if (phase === 3) {
+      this.push((this.pc >>> CPU_PAGE_SHIFT) & CPU_BYTE_MAX);
+      return false;
+    }
+    if (phase === 4) {
+      this.push(this.pc & CPU_BYTE_MAX);
+      return false;
+    }
+    if (phase === 5) {
+      this.push((this.p & ~CpuStatusFlag.Break) | CpuStatusFlag.Unused);
+      return false;
+    }
+    if (phase === 6) {
+      this.cycleAddress =
+        this.cycleSequence === CpuCycleSequence.NonMaskableInterrupt || this.nmiTakeoverProbe?.()
+          ? CPU_VECTOR.nonMaskableInterrupt
+          : CPU_VECTOR.interruptRequest;
+      this.cycleLow = this.memory.read(this.cycleAddress);
+      return false;
+    }
+
+    const high = this.memory.read(word(this.cycleAddress + 1));
+    this.pc = this.cycleLow | (high << CPU_PAGE_SHIFT);
+    this.p |= CpuStatusFlag.InterruptDisable;
+    this.cycleSequence = CpuCycleSequence.None;
+    this.cycleSequencePhase = 0;
+    this.cyclesConsumed = this.cycleCurrentCycles;
+    this.interruptTiming.completeInterruptEntry();
+    return true;
+  }
+
+  /**
    * 执行 PC 指向的一条指令。
    *
    * @returns 指令实际消耗的 CPU 总线周期数。
@@ -101,11 +251,13 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    */
   executeInstruction(checkBreakpoints = false) {
     if (this.jammed) return this.executeJammedBusCycle();
+    this.assertNoActiveCycleSequence();
 
     const interruptWasMasked = (this.p & CpuStatusFlag.InterruptDisable) !== 0;
     this.interruptTiming.beginInstruction();
     const instructionAddress = this.pc;
-    const opcode = this.memory.read(this.pc++);
+    this.pc = word(this.pc + 1);
+    const opcode = this.memory.read(instructionAddress);
     this.instructionObserver?.(instructionAddress, opcode);
     const opcodeInfo = this.requireOpcode(opcode);
     this.cyclesConsumed = opcodeInfo.cycles;
@@ -115,11 +267,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     if (this.jammed) return this.cyclesConsumed;
 
     const interruptIsMasked = (this.p & CpuStatusFlag.InterruptDisable) !== 0;
-    this.interruptTiming.completeInstruction({
-      interruptMaskedAfter: interruptIsMasked,
-      interruptMaskedBefore: interruptWasMasked,
-      opcode,
-    });
+    this.interruptTiming.completeInstructionState(interruptIsMasked, interruptWasMasked, opcode);
 
     // 断点在整条指令及其全部总线周期完成后生效，避免留下半执行状态。
     if (checkBreakpoints && (this.breakpointTable[this.pc] ?? 0) > 0) {
@@ -133,6 +281,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    * @returns NMI 固定消耗的七个 CPU 周期。
    */
   nmi() {
+    this.assertNoActiveCycleSequence();
     if (this.jammed) return 0;
 
     this.dummyRead(this.pc);
@@ -150,6 +299,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    * @returns 已接受 IRQ 时为七个周期，否则为零。
    */
   irq() {
+    this.assertNoActiveCycleSequence();
     if ((this.p & CpuStatusFlag.InterruptDisable) === 0) {
       return this.serviceMaskableInterrupt();
     }
@@ -175,6 +325,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   }
 
   serviceMaskableInterrupt(): number {
+    this.assertNoActiveCycleSequence();
     if (this.jammed) return 0;
 
     this.dummyRead(this.pc);
@@ -199,6 +350,11 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     const pcOld = this.pc;
     this.jammed = false;
     this.jamBusCycleIndex = 0;
+    this.cyclePhase = 0;
+    this.cycleCurrentCycles = 0;
+    this.cycleCheckBreakpoints = false;
+    this.cycleSequence = CpuCycleSequence.None;
+    this.cycleSequencePhase = 0;
     this.memoryAccess = CpuMemoryAccess.Read;
     this.interruptTiming.reset();
     this.p |= CpuStatusFlag.InterruptDisable;
@@ -252,6 +408,11 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     this.cyclesConsumed = 0;
     this.jammed = false;
     this.jamBusCycleIndex = 0;
+    this.cyclePhase = 0;
+    this.cycleCurrentCycles = 0;
+    this.cycleCheckBreakpoints = false;
+    this.cycleSequence = CpuCycleSequence.None;
+    this.cycleSequencePhase = 0;
     this.memoryAccess = CpuMemoryAccess.Read;
     this.interruptTiming.reset();
   }
@@ -307,6 +468,750 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   getUseUndocumentedOpcodes() {
     return this.useUndocumentedOpcodes;
+  }
+
+  private assertNoActiveCycleSequence(): void {
+    if (this.cyclePhase !== 0 || this.cycleSequence !== CpuCycleSequence.None) {
+      throw new Error('Atomic execution cannot start while a CPU cycle sequence is active.');
+    }
+  }
+
+  // ------------------------------------------------------------------------
+  // 逐总线周期执行器
+  // ------------------------------------------------------------------------
+
+  private finishCycleInstruction(): true {
+    this.cyclePhase = 0;
+    this.cyclesConsumed = this.cycleCurrentCycles;
+    const interruptIsMasked = (this.p & CpuStatusFlag.InterruptDisable) !== 0;
+    this.interruptTiming.completeInstructionState(
+      interruptIsMasked,
+      this.cycleInterruptMaskedBefore,
+      this.cycleOpcode,
+    );
+    const checkBreakpoints = this.cycleCheckBreakpoints;
+    this.cycleCheckBreakpoints = false;
+    if (checkBreakpoints && (this.breakpointTable[this.pc] ?? 0) > 0) {
+      throw new BreakpointError(this.pc, this.breakpointTable[this.pc] ?? 0, this.cyclesConsumed);
+    }
+    return true;
+  }
+
+  private readCycleInstructionByte(): number {
+    const address = this.pc;
+    this.pc = word(this.pc + 1);
+    return this.memory.read(address);
+  }
+
+  private tickCycleAddressed(): boolean {
+    switch (this.cycleAddressMode) {
+      case CycleAddressMode.IMM:
+        this.cycleData = this.readCycleInstructionByte();
+        this.applyCycleRead(this.cycleData);
+        return this.finishCycleInstruction();
+      case CycleAddressMode.ZP:
+        return this.tickCycleZeroPage(false, false);
+      case CycleAddressMode.ZPX:
+        return this.tickCycleZeroPage(true, false);
+      case CycleAddressMode.ZPY:
+        return this.tickCycleZeroPage(false, true);
+      case CycleAddressMode.ABS:
+        return this.tickCycleAbsolute(false, false);
+      case CycleAddressMode.ABSX:
+        return this.tickCycleAbsolute(true, false);
+      case CycleAddressMode.ABSY:
+        return this.tickCycleAbsolute(false, true);
+      case CycleAddressMode.INDX:
+        return this.tickCycleIndirectX();
+      case CycleAddressMode.INDY:
+        return this.tickCycleIndirectY();
+      default:
+        throw new Error(`Unsupported cycle addressing mode ${this.cycleAddressMode}.`);
+    }
+  }
+
+  private tickCycleZeroPage(indexX: boolean, indexY: boolean): boolean {
+    const indexed = indexX || indexY;
+    if (this.cyclePhase === 1) {
+      this.cycleBaseAddress = this.readCycleInstructionByte();
+      this.cycleAddress = this.cycleBaseAddress;
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (indexed && this.cyclePhase === 2) {
+      this.memory.read(this.cycleBaseAddress);
+      this.cycleAddress = (this.cycleBaseAddress + (indexX ? this.x : this.y)) & CPU_BYTE_MAX;
+      this.cyclePhase = 3;
+      return false;
+    }
+    return this.tickCycleEffectiveAddress(indexed ? 3 : 2);
+  }
+
+  private tickCycleAbsolute(indexX: boolean, indexY: boolean): boolean {
+    const indexed = indexX || indexY;
+    if (this.cyclePhase === 1) {
+      this.cycleLow = this.readCycleInstructionByte();
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      const high = this.readCycleInstructionByte();
+      this.cycleBaseAddress = this.cycleLow | (high << CPU_PAGE_SHIFT);
+      this.cycleAddress = word(this.cycleBaseAddress + (indexX ? this.x : indexY ? this.y : 0));
+      this.cycleProvisionalAddress =
+        (this.cycleBaseAddress & 0xff00) | (this.cycleAddress & CPU_PAGE_OFFSET_MASK);
+      this.cyclePageCrossed = ((this.cycleBaseAddress ^ this.cycleAddress) & CPU_PAGE_SIZE) !== 0;
+      this.cyclePhase = 3;
+      return false;
+    }
+    if (
+      indexed &&
+      this.cyclePhase === 3 &&
+      (this.cycleMemoryAccess !== CycleMemoryAccess.READ || this.cyclePageCrossed)
+    ) {
+      this.memory.read(this.cycleProvisionalAddress);
+      this.cyclePhase = 4;
+      return false;
+    }
+    const dataPhase =
+      indexed && (this.cycleMemoryAccess !== CycleMemoryAccess.READ || this.cyclePageCrossed)
+        ? 4
+        : 3;
+    return this.tickCycleEffectiveAddress(dataPhase);
+  }
+
+  private tickCycleIndirectX(): boolean {
+    if (this.cyclePhase === 1) {
+      this.cycleBaseAddress = this.readCycleInstructionByte();
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      this.memory.read(this.cycleBaseAddress);
+      this.cycleBaseAddress = (this.cycleBaseAddress + this.x) & CPU_BYTE_MAX;
+      this.cyclePhase = 3;
+      return false;
+    }
+    if (this.cyclePhase === 3) {
+      this.cycleLow = this.memory.read(this.cycleBaseAddress);
+      this.cyclePhase = 4;
+      return false;
+    }
+    if (this.cyclePhase === 4) {
+      const high = this.memory.read((this.cycleBaseAddress + 1) & CPU_BYTE_MAX);
+      this.cycleAddress = this.cycleLow | (high << CPU_PAGE_SHIFT);
+      this.cyclePhase = 5;
+      return false;
+    }
+    return this.tickCycleEffectiveAddress(5);
+  }
+
+  private tickCycleIndirectY(): boolean {
+    if (this.cyclePhase === 1) {
+      this.cycleBaseAddress = this.readCycleInstructionByte();
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      this.cycleLow = this.memory.read(this.cycleBaseAddress);
+      this.cyclePhase = 3;
+      return false;
+    }
+    if (this.cyclePhase === 3) {
+      const high = this.memory.read((this.cycleBaseAddress + 1) & CPU_BYTE_MAX);
+      this.cycleBaseAddress = this.cycleLow | (high << CPU_PAGE_SHIFT);
+      this.cycleAddress = word(this.cycleBaseAddress + this.y);
+      this.cycleProvisionalAddress =
+        (this.cycleBaseAddress & 0xff00) | (this.cycleAddress & CPU_PAGE_OFFSET_MASK);
+      this.cyclePageCrossed = ((this.cycleBaseAddress ^ this.cycleAddress) & CPU_PAGE_SIZE) !== 0;
+      this.cyclePhase = 4;
+      return false;
+    }
+    if (
+      this.cyclePhase === 4 &&
+      (this.cycleMemoryAccess !== CycleMemoryAccess.READ || this.cyclePageCrossed)
+    ) {
+      this.memory.read(this.cycleProvisionalAddress);
+      this.cyclePhase = 5;
+      return false;
+    }
+    return this.tickCycleEffectiveAddress(
+      this.cycleMemoryAccess !== CycleMemoryAccess.READ || this.cyclePageCrossed ? 5 : 4,
+    );
+  }
+
+  private tickCycleEffectiveAddress(dataPhase: number): boolean {
+    if (this.cyclePhase === dataPhase) {
+      if (this.cycleMemoryAccess === CycleMemoryAccess.READ) {
+        this.cycleData = this.memory.read(this.cycleAddress);
+        this.applyCycleRead(this.cycleData);
+        return this.finishCycleInstruction();
+      }
+      if (this.cycleMemoryAccess === CycleMemoryAccess.WRITE) {
+        const packed = this.cycleStoreAddressAndValue();
+        this.memory.write(packed >>> CPU_PAGE_SHIFT, packed & CPU_BYTE_MAX);
+        return this.finishCycleInstruction();
+      }
+      this.cycleData = this.memory.read(this.cycleAddress);
+      this.cyclePhase += 1;
+      return false;
+    }
+    if (this.cyclePhase === dataPhase + 1) {
+      this.memory.write(this.cycleAddress, this.cycleData);
+      this.cyclePhase += 1;
+      return false;
+    }
+    const transformed = this.prepareCycleReadModifyWrite(this.cycleData);
+    this.memory.write(this.cycleAddress, transformed);
+    this.completeCycleReadModifyWrite(transformed);
+    return this.finishCycleInstruction();
+  }
+
+  /** 地址放高 16 位、数据放低八位，避免在写热路径分配元组。 */
+  private cycleStoreAddressAndValue(): number {
+    let value: number;
+    switch (this.cycleOperation) {
+      case CycleOperation.STA:
+        value = this.a;
+        break;
+      case CycleOperation.STX:
+        value = this.x;
+        break;
+      case CycleOperation.STY:
+        value = this.y;
+        break;
+      case CycleOperation.AXS_STORE:
+        value = this.a & this.x;
+        break;
+      case CycleOperation.TAS:
+        this.sp = this.a & this.x;
+        value = this.sp;
+        break;
+      case CycleOperation.AXA:
+        value = this.a & this.x;
+        break;
+      case CycleOperation.XAS:
+        value = this.x;
+        break;
+      case CycleOperation.SAY:
+        value = this.y;
+        break;
+      default:
+        throw new Error(`Operation ${this.cycleOperation} is not a store.`);
+    }
+
+    let writeAddress = this.cycleAddress;
+    if (
+      this.cycleOperation === CycleOperation.AXA ||
+      this.cycleOperation === CycleOperation.TAS ||
+      this.cycleOperation === CycleOperation.XAS ||
+      this.cycleOperation === CycleOperation.SAY
+    ) {
+      value &= ((this.cycleBaseAddress >>> CPU_PAGE_SHIFT) + 1) & CPU_BYTE_MAX;
+      if (((this.cycleBaseAddress ^ this.cycleAddress) & CPU_PAGE_SIZE) !== 0) {
+        writeAddress = (value << CPU_PAGE_SHIFT) | (this.cycleAddress & CPU_PAGE_OFFSET_MASK);
+      }
+    }
+    return (writeAddress << CPU_PAGE_SHIFT) | value;
+  }
+
+  private tickCycleSpecial(): boolean {
+    switch (this.cycleOperation) {
+      case CycleOperation.BRK:
+        return this.tickCycleBreak();
+      case CycleOperation.JAM:
+        this.memory.read(this.pc);
+        this.jammed = true;
+        this.jamBusCycleIndex = 0;
+        this.cyclePhase = 0;
+        this.cyclesConsumed = this.cycleCurrentCycles;
+        this.cycleCheckBreakpoints = false;
+        return false;
+      case CycleOperation.JSR:
+        return this.tickCycleJumpSubroutine();
+      case CycleOperation.JMP:
+        return this.tickCycleJump();
+      case CycleOperation.RTS:
+        return this.tickCycleReturnSubroutine();
+      case CycleOperation.RTI:
+        return this.tickCycleReturnInterrupt();
+      case CycleOperation.PHA:
+      case CycleOperation.PHP:
+        return this.tickCyclePushInstruction();
+      case CycleOperation.PLA:
+      case CycleOperation.PLP:
+        return this.tickCyclePullInstruction();
+      default:
+        if (this.cycleAddressMode === CycleAddressMode.REL) return this.tickCycleBranch();
+        this.memory.read(this.pc);
+        this.applyCycleImplied();
+        return this.finishCycleInstruction();
+    }
+  }
+
+  private tickCycleBreak(): boolean {
+    if (this.cyclePhase === 1) {
+      this.memory.read(this.pc);
+      this.pc = word(this.pc + 1);
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      this.push((this.pc >>> CPU_PAGE_SHIFT) & CPU_BYTE_MAX);
+      this.cyclePhase = 3;
+      return false;
+    }
+    if (this.cyclePhase === 3) {
+      this.push(this.pc & CPU_BYTE_MAX);
+      this.cyclePhase = 4;
+      return false;
+    }
+    if (this.cyclePhase === 4) {
+      this.push(this.p | CpuStatusFlag.Break | CpuStatusFlag.Unused);
+      this.cyclePhase = 5;
+      return false;
+    }
+    if (this.cyclePhase === 5) {
+      this.cycleAddress = this.nmiTakeoverProbe?.()
+        ? CPU_VECTOR.nonMaskableInterrupt
+        : CPU_VECTOR.interruptRequest;
+      this.cycleLow = this.memory.read(this.cycleAddress);
+      this.cyclePhase = 6;
+      return false;
+    }
+    const high = this.memory.read(word(this.cycleAddress + 1));
+    this.pc = this.cycleLow | (high << CPU_PAGE_SHIFT);
+    this.p |= CpuStatusFlag.InterruptDisable;
+    return this.finishCycleInstruction();
+  }
+
+  private tickCycleJumpSubroutine(): boolean {
+    if (this.cyclePhase === 1) {
+      this.cycleLow = this.memory.read(this.pc);
+      this.pc = word(this.pc + 1);
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      this.memory.readStack(this.sp);
+      this.cyclePhase = 3;
+      return false;
+    }
+    if (this.cyclePhase === 3) {
+      this.push((this.pc >>> CPU_PAGE_SHIFT) & CPU_BYTE_MAX);
+      this.cyclePhase = 4;
+      return false;
+    }
+    if (this.cyclePhase === 4) {
+      this.push(this.pc & CPU_BYTE_MAX);
+      this.cyclePhase = 5;
+      return false;
+    }
+    const high = this.memory.read(this.pc);
+    this.pc = this.cycleLow | (high << CPU_PAGE_SHIFT);
+    return this.finishCycleInstruction();
+  }
+
+  private tickCycleJump(): boolean {
+    if (this.cyclePhase === 1) {
+      this.cycleLow = this.readCycleInstructionByte();
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      const high = this.memory.read(this.pc);
+      this.cycleAddress = this.cycleLow | (high << CPU_PAGE_SHIFT);
+      if (this.cycleAddressMode === CycleAddressMode.ABS) {
+        this.pc = this.cycleAddress;
+        return this.finishCycleInstruction();
+      }
+      this.cyclePhase = 3;
+      return false;
+    }
+    if (this.cyclePhase === 3) {
+      this.cycleLow = this.memory.read(this.cycleAddress);
+      this.cyclePhase = 4;
+      return false;
+    }
+    const highAddress =
+      (this.cycleAddress & CPU_PAGE_OFFSET_MASK) === CPU_PAGE_OFFSET_MASK
+        ? this.cycleAddress & 0xff00
+        : word(this.cycleAddress + 1);
+    const high = this.memory.read(highAddress);
+    this.pc = this.cycleLow | (high << CPU_PAGE_SHIFT);
+    return this.finishCycleInstruction();
+  }
+
+  private tickCycleReturnSubroutine(): boolean {
+    if (this.cyclePhase === 1) {
+      this.memory.read(this.pc);
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      this.memory.readStack(this.sp);
+      this.cyclePhase = 3;
+      return false;
+    }
+    if (this.cyclePhase === 3) {
+      this.sp = (this.sp + 1) & CPU_BYTE_MAX;
+      this.cycleLow = this.memory.readStack(this.sp);
+      this.cyclePhase = 4;
+      return false;
+    }
+    if (this.cyclePhase === 4) {
+      this.sp = (this.sp + 1) & CPU_BYTE_MAX;
+      const high = this.memory.readStack(this.sp);
+      this.cycleAddress = this.cycleLow | (high << CPU_PAGE_SHIFT);
+      this.cyclePhase = 5;
+      return false;
+    }
+    this.memory.read(this.cycleAddress);
+    this.pc = word(this.cycleAddress + 1);
+    return this.finishCycleInstruction();
+  }
+
+  private tickCycleReturnInterrupt(): boolean {
+    if (this.cyclePhase === 1) {
+      this.memory.read(this.pc);
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      this.memory.readStack(this.sp);
+      this.cyclePhase = 3;
+      return false;
+    }
+    if (this.cyclePhase === 3) {
+      this.sp = (this.sp + 1) & CPU_BYTE_MAX;
+      const value = this.memory.readStack(this.sp);
+      this.p = (value & ~CpuStatusFlag.Break) | CpuStatusFlag.Unused;
+      this.cyclePhase = 4;
+      return false;
+    }
+    if (this.cyclePhase === 4) {
+      this.sp = (this.sp + 1) & CPU_BYTE_MAX;
+      this.cycleLow = this.memory.readStack(this.sp);
+      this.cyclePhase = 5;
+      return false;
+    }
+    this.sp = (this.sp + 1) & CPU_BYTE_MAX;
+    const high = this.memory.readStack(this.sp);
+    this.pc = this.cycleLow | (high << CPU_PAGE_SHIFT);
+    return this.finishCycleInstruction();
+  }
+
+  private tickCyclePushInstruction(): boolean {
+    if (this.cyclePhase === 1) {
+      this.memory.read(this.pc);
+      this.cyclePhase = 2;
+      return false;
+    }
+    this.push(
+      this.cycleOperation === CycleOperation.PHA
+        ? this.a
+        : this.p | CpuStatusFlag.Break | CpuStatusFlag.Unused,
+    );
+    return this.finishCycleInstruction();
+  }
+
+  private tickCyclePullInstruction(): boolean {
+    if (this.cyclePhase === 1) {
+      this.memory.read(this.pc);
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      this.memory.readStack(this.sp);
+      this.cyclePhase = 3;
+      return false;
+    }
+    this.sp = (this.sp + 1) & CPU_BYTE_MAX;
+    const value = this.memory.readStack(this.sp);
+    if (this.cycleOperation === CycleOperation.PLA) {
+      this.a = value;
+      this.setStatusFlags(value);
+    } else {
+      this.p = (value & ~CpuStatusFlag.Break) | CpuStatusFlag.Unused;
+    }
+    return this.finishCycleInstruction();
+  }
+
+  private tickCycleBranch(): boolean {
+    if (this.cyclePhase === 1) {
+      this.cycleData = this.readCycleInstructionByte();
+      if (!this.isCycleBranchTaken()) return this.finishCycleInstruction();
+      this.cycleBaseAddress = this.pc;
+      const offset = this.cycleData < 0x80 ? this.cycleData : this.cycleData - CPU_PAGE_SIZE;
+      this.cycleAddress = word(this.pc + offset);
+      this.cyclePageCrossed = ((this.cycleBaseAddress ^ this.cycleAddress) & CPU_PAGE_SIZE) !== 0;
+      this.cyclePhase = 2;
+      return false;
+    }
+    if (this.cyclePhase === 2) {
+      this.memory.read(this.cycleBaseAddress);
+      if (!this.cyclePageCrossed) {
+        this.interruptTiming.delayInterruptForTakenBranch();
+        this.pc = this.cycleAddress;
+        return this.finishCycleInstruction();
+      }
+      this.cyclePhase = 3;
+      return false;
+    }
+    this.memory.read((this.cycleBaseAddress & 0xff00) | (this.cycleAddress & CPU_PAGE_OFFSET_MASK));
+    this.pc = this.cycleAddress;
+    return this.finishCycleInstruction();
+  }
+
+  private isCycleBranchTaken(): boolean {
+    switch (this.cycleOperation) {
+      case CycleOperation.BPL:
+        return (this.p & CpuStatusFlag.Negative) === 0;
+      case CycleOperation.BMI:
+        return (this.p & CpuStatusFlag.Negative) !== 0;
+      case CycleOperation.BVC:
+        return (this.p & CpuStatusFlag.Overflow) === 0;
+      case CycleOperation.BVS:
+        return (this.p & CpuStatusFlag.Overflow) !== 0;
+      case CycleOperation.BCC:
+        return (this.p & CpuStatusFlag.Carry) === 0;
+      case CycleOperation.BCS:
+        return (this.p & CpuStatusFlag.Carry) !== 0;
+      case CycleOperation.BNE:
+        return (this.p & CpuStatusFlag.Zero) === 0;
+      case CycleOperation.BEQ:
+        return (this.p & CpuStatusFlag.Zero) !== 0;
+      default:
+        return false;
+    }
+  }
+
+  private applyCycleImplied(): void {
+    switch (this.cycleOperation) {
+      case CycleOperation.NOP:
+        break;
+      case CycleOperation.ASL:
+        this.a = this.asl(this.a);
+        break;
+      case CycleOperation.ROL:
+        this.a = this.rol(this.a);
+        break;
+      case CycleOperation.LSR:
+        this.a = this.lsr(this.a);
+        break;
+      case CycleOperation.ROR:
+        this.a = this.ror(this.a);
+        break;
+      case CycleOperation.CLC:
+        this.p &= ~CpuStatusFlag.Carry;
+        break;
+      case CycleOperation.SEC:
+        this.p |= CpuStatusFlag.Carry;
+        break;
+      case CycleOperation.CLI:
+        this.p &= ~CpuStatusFlag.InterruptDisable;
+        break;
+      case CycleOperation.SEI:
+        this.p |= CpuStatusFlag.InterruptDisable;
+        break;
+      case CycleOperation.CLV:
+        this.p &= ~CpuStatusFlag.Overflow;
+        break;
+      case CycleOperation.CLD:
+        this.p &= ~CpuStatusFlag.Decimal;
+        break;
+      case CycleOperation.SED:
+        this.p |= CpuStatusFlag.Decimal;
+        break;
+      case CycleOperation.DEY:
+        this.y = (this.y - 1) & CPU_BYTE_MAX;
+        this.setStatusFlags(this.y);
+        break;
+      case CycleOperation.INY:
+        this.y = (this.y + 1) & CPU_BYTE_MAX;
+        this.setStatusFlags(this.y);
+        break;
+      case CycleOperation.DEX:
+        this.x = (this.x - 1) & CPU_BYTE_MAX;
+        this.setStatusFlags(this.x);
+        break;
+      case CycleOperation.INX:
+        this.x = (this.x + 1) & CPU_BYTE_MAX;
+        this.setStatusFlags(this.x);
+        break;
+      case CycleOperation.TXA:
+        this.a = this.x;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.TYA:
+        this.a = this.y;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.TAY:
+        this.y = this.a;
+        this.setStatusFlags(this.y);
+        break;
+      case CycleOperation.TAX:
+        this.x = this.a;
+        this.setStatusFlags(this.x);
+        break;
+      case CycleOperation.TXS:
+        this.sp = this.x;
+        break;
+      case CycleOperation.TSX:
+        this.x = this.sp;
+        this.setStatusFlags(this.x);
+        break;
+      default:
+        throw new Error(`Unsupported implied operation ${this.cycleOperation}.`);
+    }
+  }
+
+  private applyCycleRead(value: number): void {
+    switch (this.cycleOperation) {
+      case CycleOperation.NOP:
+        break;
+      case CycleOperation.ORA:
+        this.a |= value;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.AND:
+        this.a &= value;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.EOR:
+        this.a ^= value;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.ADC:
+        this.operateAdd(value);
+        break;
+      case CycleOperation.SBC:
+        this.operateSub(value);
+        break;
+      case CycleOperation.BIT:
+        this.p &= ~(CpuStatusFlag.Zero | CpuStatusFlag.Overflow | CpuStatusFlag.Negative);
+        this.p |= value & (CpuStatusFlag.Overflow | CpuStatusFlag.Negative);
+        if ((this.a & value) === 0) this.p |= CpuStatusFlag.Zero;
+        break;
+      case CycleOperation.LDA:
+        this.a = value;
+        this.setStatusFlags(value);
+        break;
+      case CycleOperation.LDX:
+        this.x = value;
+        this.setStatusFlags(value);
+        break;
+      case CycleOperation.LDY:
+        this.y = value;
+        this.setStatusFlags(value);
+        break;
+      case CycleOperation.LAX:
+        this.a = value;
+        this.x = value;
+        this.setStatusFlags(value);
+        break;
+      case CycleOperation.LAS:
+        this.a = value & this.sp;
+        this.x = this.a;
+        this.sp = this.a;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.CMP:
+        this.operateCmp(this.a, value);
+        break;
+      case CycleOperation.CPX:
+        this.operateCmp(this.x, value);
+        break;
+      case CycleOperation.CPY:
+        this.operateCmp(this.y, value);
+        break;
+      case CycleOperation.ANC:
+        this.a &= value;
+        this.setStatusFlags(this.a);
+        this.p &= ~CpuStatusFlag.Carry;
+        if ((this.p & CpuStatusFlag.Negative) !== 0) this.p |= CpuStatusFlag.Carry;
+        break;
+      case CycleOperation.ALR:
+        this.a &= value;
+        this.setStatusFlags(this.a);
+        this.a = this.lsr(this.a);
+        break;
+      case CycleOperation.ARR:
+        this.operateArr(value);
+        break;
+      case CycleOperation.XAA:
+        this.a = (this.a | NMOS_UNSTABLE_DATA_MASK) & this.x & value;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.OAL:
+        this.a = (this.a | NMOS_UNSTABLE_DATA_MASK) & value;
+        this.x = this.a;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.SAX_SUBTRACT: {
+        const difference = (this.a & this.x) - value;
+        this.p &= ~CpuStatusFlag.Carry;
+        if (difference >= 0) this.p |= CpuStatusFlag.Carry;
+        this.x = difference & CPU_BYTE_MAX;
+        this.setStatusFlags(this.x);
+        break;
+      }
+      default:
+        throw new Error(`Unsupported read operation ${this.cycleOperation}.`);
+    }
+  }
+
+  private prepareCycleReadModifyWrite(value: number): number {
+    switch (this.cycleOperation) {
+      case CycleOperation.ASL:
+      case CycleOperation.ASO:
+        return this.asl(value);
+      case CycleOperation.ROL:
+      case CycleOperation.RLA:
+        return this.rol(value);
+      case CycleOperation.LSR:
+      case CycleOperation.LSE:
+        return this.lsr(value);
+      case CycleOperation.ROR:
+      case CycleOperation.RRA:
+        return this.ror(value);
+      case CycleOperation.DEC:
+        return this.decrement(value);
+      case CycleOperation.INC:
+      case CycleOperation.INS:
+        return this.increment(value);
+      case CycleOperation.DCM:
+        return (value - 1) & CPU_BYTE_MAX;
+      default:
+        throw new Error(`Unsupported read-modify-write operation ${this.cycleOperation}.`);
+    }
+  }
+
+  private completeCycleReadModifyWrite(value: number): void {
+    switch (this.cycleOperation) {
+      case CycleOperation.ASO:
+        this.a |= value;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.RLA:
+        this.a &= value;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.LSE:
+        this.a ^= value;
+        this.setStatusFlags(this.a);
+        break;
+      case CycleOperation.RRA:
+        this.operateAdd(value);
+        break;
+      case CycleOperation.DCM:
+        this.operateCmp(this.a, value);
+        break;
+      case CycleOperation.INS:
+        this.operateSub(value);
+        break;
+    }
   }
 
   // ------------------------------------------------------------------------
@@ -676,7 +1581,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   opANC() {
     if (this.useUndocumentedOpcodes) {
-      this.a &= this.memory.read(this.pc++);
+      this.a &= this.readAtomicInstructionByte();
       this.setStatusFlags(this.a);
       this.p &= ~CpuStatusFlag.Carry;
       if ((this.p & CpuStatusFlag.Negative) !== 0) this.p |= CpuStatusFlag.Carry;
@@ -715,7 +1620,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   opALR() {
     if (this.useUndocumentedOpcodes) {
-      this.a &= this.memory.read(this.pc++);
+      this.a &= this.readAtomicInstructionByte();
       this.setStatusFlags(this.a); // [CW] needed? unsure..
       this.a = this.lsr(this.a);
     } else {
@@ -738,46 +1643,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   opARR() {
     if (this.useUndocumentedOpcodes) {
-      const andResult = this.a & this.memory.read(this.pc++);
-      const carryIn = this.p & CpuStatusFlag.Carry;
-      let rotatedResult = (andResult | (carryIn << 8)) >>> 1;
-      this.p &= ~(
-        CpuStatusFlag.Carry |
-        CpuStatusFlag.Zero |
-        CpuStatusFlag.Overflow |
-        CpuStatusFlag.Negative
-      );
-
-      // ARR 的 N 来自旧 C，V 表示 ROR 前后第 6 位是否改变，不能复用普通 ROR 的 C 规则。
-      if (carryIn !== 0) this.p |= CpuStatusFlag.Negative;
-      if (rotatedResult === 0) this.p |= CpuStatusFlag.Zero;
-      if (((rotatedResult ^ andResult) & CpuStatusFlag.Overflow) !== 0) {
-        this.p |= CpuStatusFlag.Overflow;
-      }
-
-      if ((this.p & CpuStatusFlag.Decimal) !== 0) {
-        // 十进制 ARR 根据 AND 的中间结果分别修正两个半字节，低位溢出不会传给高位。
-        if (
-          (andResult & CPU_LOW_NIBBLE_MASK) + (andResult & CpuStatusFlag.Carry) >
-          ARR_LOW_DIGIT_THRESHOLD
-        ) {
-          rotatedResult =
-            (rotatedResult & CPU_HIGH_NIBBLE_MASK) |
-            ((rotatedResult + BCD_LOW_DIGIT_ADJUSTMENT) & CPU_LOW_NIBBLE_MASK);
-        }
-        if (
-          (andResult & CPU_HIGH_NIBBLE_MASK) + (andResult & CPU_NIBBLE_CARRY) >
-          ARR_HIGH_DIGIT_THRESHOLD
-        ) {
-          rotatedResult =
-            (rotatedResult & CPU_LOW_NIBBLE_MASK) |
-            ((rotatedResult + BCD_HIGH_DIGIT_ADJUSTMENT) & CPU_HIGH_NIBBLE_MASK);
-          this.p |= CpuStatusFlag.Carry;
-        }
-      } else if ((rotatedResult & ARR_CARRY_SOURCE_MASK) !== 0) {
-        this.p |= CpuStatusFlag.Carry;
-      }
-      this.a = rotatedResult & CPU_BYTE_MAX;
+      this.operateArr(this.readAtomicInstructionByte());
     } else {
       this.usedUndocumentedOpcode();
     }
@@ -811,7 +1677,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   opXAA() {
     // XAA 会把累加器经由 NMOS 内部数据掩码后再与 X、立即数相与。
     if (this.useUndocumentedOpcodes) {
-      const immediate = this.memory.read(this.pc++);
+      const immediate = this.readAtomicInstructionByte();
       this.a = (this.a | NMOS_UNSTABLE_DATA_MASK) & this.x & immediate;
       this.setStatusFlags(this.a);
     } else {
@@ -916,7 +1782,9 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    * @returns 操作数字节所在地址；调用方随后通过总线读取该字节。
    */
   byImmediate() {
-    return this.pc++;
+    const address = this.pc;
+    this.pc = word(this.pc + 1);
+    return address;
   }
   /**
    * 零页寻址 `$aa`。
@@ -924,7 +1792,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    * @returns 八位零页有效地址。
    */
   byZeroPage() {
-    return this.memory.read(this.pc++);
+    return this.readAtomicInstructionByte();
   }
   /**
    * X 变址零页寻址 `$aa,X`。
@@ -932,7 +1800,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    * @returns 在零页内回绕后的八位有效地址。
    */
   byZeroPageX() {
-    const baseAddress = this.memory.read(this.pc++);
+    const baseAddress = this.readAtomicInstructionByte();
     this.dummyRead(baseAddress);
     return (baseAddress + this.x) & 0xff;
   }
@@ -942,7 +1810,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    * @returns 在零页内回绕后的八位有效地址。
    */
   byZeroPageY() {
-    const baseAddress = this.memory.read(this.pc++);
+    const baseAddress = this.readAtomicInstructionByte();
     this.dummyRead(baseAddress);
     return (baseAddress + this.y) & 0xff;
   }
@@ -953,7 +1821,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    */
   byAbsolute() {
     const address = this.memory.readWord(this.pc);
-    this.pc += 2;
+    this.pc = word(this.pc + 2);
     return address;
   }
   /**
@@ -971,7 +1839,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     if (this.memoryAccess === CpuMemoryAccess.Read && pageCrossed) {
       this.cyclesConsumed++;
     }
-    this.pc += 2;
+    this.pc = word(this.pc + 2);
     return indexedAddress;
   }
   /**
@@ -989,7 +1857,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     if (this.memoryAccess === CpuMemoryAccess.Read && pageCrossed) {
       this.cyclesConsumed++;
     }
-    this.pc += 2;
+    this.pc = word(this.pc + 2);
     return indexedAddress;
   }
   /**
@@ -999,7 +1867,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    */
   byIndirect() {
     const i = this.memory.readWord(this.pc);
-    this.pc += 2;
+    this.pc = word(this.pc + 2);
     if ((i & 0x00ff) == 0xff) {
       return (this.memory.read(i & 0xff00) << 8) | this.memory.read(i);
     } else {
@@ -1012,7 +1880,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    * @returns 零页指针指向的 16 位有效地址。
    */
   byIndirectX() {
-    const basePointer = this.memory.read(this.pc++);
+    const basePointer = this.readAtomicInstructionByte();
     this.dummyRead(basePointer);
     const pointer = (basePointer + this.x) & 0xff;
     return this.readZeroPageWord(pointer);
@@ -1023,7 +1891,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    * @returns 指针基址加 Y 后的有效地址；跨页和写周期会保留虚读。
    */
   byIndirectY() {
-    const baseAddress = this.readZeroPageWord(this.memory.read(this.pc++));
+    const baseAddress = this.readZeroPageWord(this.readAtomicInstructionByte());
     const indexedAddress = word(baseAddress + this.y);
     const pageCrossed = ((indexedAddress ^ baseAddress) & 0x100) !== 0;
     if (this.memoryAccess !== CpuMemoryAccess.Read || pageCrossed) {
@@ -1191,6 +2059,49 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     this.p |= this.znTable[this.a] ?? 0;
   }
 
+  /** 执行未公开 ARR 的 AND、ROR 与 NMOS 十进制半字节校正。 */
+  private operateArr(immediate: number): void {
+    const andResult = this.a & immediate;
+    const carryIn = this.p & CpuStatusFlag.Carry;
+    let rotatedResult = (andResult | (carryIn << 8)) >>> 1;
+    this.p &= ~(
+      CpuStatusFlag.Carry |
+      CpuStatusFlag.Zero |
+      CpuStatusFlag.Overflow |
+      CpuStatusFlag.Negative
+    );
+
+    // N 来自旧 C；V 表示旋转前后第 6 位是否改变。
+    if (carryIn !== 0) this.p |= CpuStatusFlag.Negative;
+    if (rotatedResult === 0) this.p |= CpuStatusFlag.Zero;
+    if (((rotatedResult ^ andResult) & CpuStatusFlag.Overflow) !== 0) {
+      this.p |= CpuStatusFlag.Overflow;
+    }
+
+    if ((this.p & CpuStatusFlag.Decimal) !== 0) {
+      if (
+        (andResult & CPU_LOW_NIBBLE_MASK) + (andResult & CpuStatusFlag.Carry) >
+        ARR_LOW_DIGIT_THRESHOLD
+      ) {
+        rotatedResult =
+          (rotatedResult & CPU_HIGH_NIBBLE_MASK) |
+          ((rotatedResult + BCD_LOW_DIGIT_ADJUSTMENT) & CPU_LOW_NIBBLE_MASK);
+      }
+      if (
+        (andResult & CPU_HIGH_NIBBLE_MASK) + (andResult & CPU_NIBBLE_CARRY) >
+        ARR_HIGH_DIGIT_THRESHOLD
+      ) {
+        rotatedResult =
+          (rotatedResult & CPU_LOW_NIBBLE_MASK) |
+          ((rotatedResult + BCD_HIGH_DIGIT_ADJUSTMENT) & CPU_HIGH_NIBBLE_MASK);
+        this.p |= CpuStatusFlag.Carry;
+      }
+    } else if ((rotatedResult & ARR_CARRY_SOURCE_MASK) !== 0) {
+      this.p |= CpuStatusFlag.Carry;
+    }
+    this.a = rotatedResult & CPU_BYTE_MAX;
+  }
+
   /** 用不写回的八位减法实现 CMP/CPX/CPY 标志。 */
   operateCmp(i: number, j: number) {
     const k = i - j;
@@ -1201,7 +2112,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   /** 执行相对分支，并保留已采用分支及跨页时的虚读周期。 */
   branch(flagNum: number, flagVal: boolean) {
-    let offset = this.memory.read(this.pc++);
+    let offset = this.readAtomicInstructionByte();
     if (((this.p & flagNum) != 0) == flagVal) {
       if (offset & 0x80) {
         offset = -(~offset & 0xff) - 1;
@@ -1227,6 +2138,12 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
    */
   usedUndocumentedOpcode() {
     throw new Error('Undocumented 6502 opcode execution is disabled.');
+  }
+
+  private readAtomicInstructionByte(): number {
+    const address = this.pc;
+    this.pc = word(this.pc + 1);
+    return this.memory.read(address);
   }
 
   private readZeroPageWord(address: number): number {

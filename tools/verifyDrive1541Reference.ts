@@ -60,6 +60,11 @@ interface DriveHlsReferenceResult {
   readonly selectedTrack: 17 | 18;
 }
 
+interface DriveIecDelayReferenceResult {
+  readonly bootFrames: number;
+  readonly resultFrames: number;
+}
+
 const DRIVE_ROM_ASSET: ReferenceAsset = {
   cachePath: resolve('output/reference/1541-II.251968-03.bin'),
   fileName: '1541-II.251968-03.bin',
@@ -148,6 +153,14 @@ const VICE_HLS_HIGH_TRACK_EXPECTED_ASSET: ReferenceAsset = {
     `https://sourceforge.net/p/vice-emu/code/${VICE_TEST_REVISION}/tree/` +
     'testprogs/drive/hls-protection/expected_t18-35.bin?format=raw',
 };
+const VICE_IEC_BUS_DELAY_PROGRAM_ASSET: ReferenceAsset = {
+  cachePath: resolve('output/reference/vice-drive-iec-bus-delay.prg'),
+  fileName: 'iec-bus-delay-auto.prg',
+  sha256: '76059467c5f86f54b8c686c73989d2cdf95b77689b364c722a7bce06d01352f7',
+  url:
+    `https://sourceforge.net/p/vice-emu/code/${VICE_TEST_REVISION}/tree/` +
+    'testprogs/drive/iecdelay/iec-bus-delay-auto.prg?format=raw',
+};
 
 const BASIC_BOOT_FRAME_LIMIT = 300;
 const DRIVE_COMMAND_FRAME_LIMIT = 600;
@@ -155,9 +168,11 @@ const DRIVE_FORMAT_FRAME_LIMIT = 6_000;
 const DRIVE_WRITE_PROTECT_FRAME_LIMIT = 1_200;
 const DRIVE_DISK_CHANGE_FRAME_LIMIT = 1_200;
 const DRIVE_HLS_FRAME_LIMIT = 1_200;
+const DRIVE_IEC_DELAY_FRAME_LIMIT = 4_000;
 const WRITE_PROTECT_ONLY_ARGUMENT = '--write-protect-only';
 const DISK_CHANGE_ONLY_ARGUMENT = '--disk-change-only';
 const HLS_ONLY_ARGUMENT = '--hls-only';
+const IEC_DELAY_ONLY_ARGUMENT = '--iec-delay-only';
 const VICE_TEST_RESULT_ADDRESS = 0xd7ff;
 const VICE_TEST_SUCCESS_VALUE = 0x00;
 const C64_SCREEN_MEMORY = {
@@ -1132,7 +1147,110 @@ function hlsPassMessage(references: readonly DriveHlsReferenceResult[]): string 
   );
 }
 
+function assertIecDelayMachineState(
+  c64Cpu: Cpu6502,
+  drive: Commodore1541Drive,
+  frame: number,
+): void {
+  if (c64Cpu.isJammed) {
+    throw new Error(`VICE IEC delay test entered the C64 6510 JAM state at frame ${frame}.`);
+  }
+  if (drive.cpu.isJammed) {
+    throw new Error(`VICE IEC delay test entered the 1541 6502 JAM state at frame ${frame}.`);
+  }
+  if (drive.clock.leadCycles !== 0) {
+    throw new Error(
+      `VICE IEC delay test has 1541/target delta ${drive.clock.leadCycles} at frame ${frame}.`,
+    );
+  }
+}
+
+function runViceIecDelayReference(
+  firmware: C64Firmware,
+  driveRom: Uint8Array,
+  programBytes: Uint8Array,
+): DriveIecDelayReferenceResult {
+  const iecBus = new IecBus();
+  const memory = new C64Memory(firmware, { iecBus });
+  const c64Cpu = new Cpu6502(memory);
+  const drive = new Commodore1541Drive({ deviceNumber: 8, iecBus, rom: driveRom });
+  const zeroLeadCycleGuard = {
+    advanceHostCycles: (): void => {
+      if (drive.clock.leadCycles === 0) return;
+      throw new Error(
+        `VICE IEC delay test has 1541/target delta ${drive.clock.leadCycles} after a host cycle.`,
+      );
+    },
+    resetClock: (): void => {
+      // 该守卫不拥有独立时序状态。
+    },
+  };
+  const scheduler = new PalFrameScheduler(c64Cpu, memory, [drive.clock, zeroLeadCycleGuard]);
+
+  try {
+    const bootFrames = bootToBasicReady(scheduler, memory);
+    assertIecDelayMachineState(c64Cpu, drive, 0);
+
+    let result: number | undefined;
+    let resultWriteCount = 0;
+    const stopObservingResult = memory.observeWrites(({ address, value }) => {
+      if (address !== VICE_TEST_RESULT_ADDRESS) return;
+      result = value;
+      resultWriteCount += 1;
+    });
+    try {
+      installPrg(parsePrg(programBytes), memory, c64Cpu, {
+        startMode: PRG_START_MODE.basicRun,
+      });
+      for (let frame = 1; frame <= DRIVE_IEC_DELAY_FRAME_LIMIT; frame += 1) {
+        scheduler.runFrame();
+        assertIecDelayMachineState(c64Cpu, drive, frame);
+        if (resultWriteCount > 1) {
+          throw new Error(
+            `VICE IEC delay test wrote $D7FF ${resultWriteCount} times; expected exactly once.`,
+          );
+        }
+        if (result === undefined) continue;
+        if (resultWriteCount !== 1) {
+          throw new Error(
+            `VICE IEC delay test reported with ${resultWriteCount} writes to $D7FF; expected one.`,
+          );
+        }
+        if (result !== VICE_TEST_SUCCESS_VALUE) {
+          throw new Error(`VICE IEC delay test failed with result $${hex(result, 2)}.`);
+        }
+        return { bootFrames, resultFrames: frame };
+      }
+    } finally {
+      stopObservingResult();
+    }
+    throw new Error(
+      `VICE IEC delay test did not report at $D7FF within ${DRIVE_IEC_DELAY_FRAME_LIMIT} PAL frames.`,
+    );
+  } finally {
+    drive.dispose();
+  }
+}
+
+function iecDelayPassMessage(reference: DriveIecDelayReferenceResult): string {
+  return (
+    `PASS VICE drive/iecdelay/iec-bus-delay-auto.prg revision ${VICE_TEST_REVISION}: ` +
+    `BASIC READY in ${reference.bootFrames} PAL frames; one $D7FF=$00 result in ` +
+    `${reference.resultFrames} frames with zero 1541 lead cycles.`
+  );
+}
+
 async function main(): Promise<void> {
+  if (process.argv.includes(IEC_DELAY_ONLY_ARGUMENT)) {
+    const [firmware, driveRom, programBytes] = await Promise.all([
+      loadFirmware(),
+      loadReferenceAsset(DRIVE_ROM_ASSET),
+      loadReferenceAsset(VICE_IEC_BUS_DELAY_PROGRAM_ASSET),
+    ]);
+    const reference = runViceIecDelayReference(firmware, driveRom, programBytes);
+    console.log(iecDelayPassMessage(reference));
+    return;
+  }
   if (process.argv.includes(WRITE_PROTECT_ONLY_ARGUMENT)) {
     const [firmware, driveRom, diskBytes, programBytes] = await Promise.all([
       loadFirmware(),
@@ -1193,6 +1311,7 @@ async function main(): Promise<void> {
     hlsProgramBytes,
     hlsLowTrackExpected,
     hlsHighTrackExpected,
+    iecDelayProgramBytes,
   ] = await Promise.all([
     loadFirmware(),
     loadReferenceAsset(DRIVE_ROM_ASSET),
@@ -1206,6 +1325,7 @@ async function main(): Promise<void> {
     loadReferenceAsset(VICE_HLS_PROGRAM_ASSET),
     loadReferenceAsset(VICE_HLS_LOW_TRACK_EXPECTED_ASSET),
     loadReferenceAsset(VICE_HLS_HIGH_TRACK_EXPECTED_ASSET),
+    loadReferenceAsset(VICE_IEC_BUS_DELAY_PROGRAM_ASSET),
   ]);
 
   const iecBus = new IecBus();
@@ -1291,6 +1411,7 @@ async function main(): Promise<void> {
       'LOAD"CODEX",8',
     );
     assertBasicProgramInMemory(memory, EXPECTED_SAVED_BASIC_FILE);
+    const iecDelayReference = runViceIecDelayReference(firmware, driveRom, iecDelayProgramBytes);
     const formatReference = runViceFormatReference(firmware, driveRom, formatDiskBytes);
     const writeProtectReference = runViceWriteProtectReference(
       firmware,
@@ -1334,12 +1455,14 @@ async function main(): Promise<void> {
         `${formatReference.committedTrackCount} tracks and recovered the exact ` +
         `${formatReference.programByteLength}-byte FORMAT PRG.`,
     );
+    console.log(iecDelayPassMessage(iecDelayReference));
     console.log(writeProtectPassMessage(writeProtectReference));
     console.log(diskChangePassMessage(diskChangeReference));
     console.log(hlsPassMessage(hlsReferences));
     console.log(
       `PASS VICE 1541 disk fixture revision ${VICE_TEST_REVISION}: real DOS ROM, IEC, GCR, ` +
-        'D64 directory, KERNAL LOAD, SAVE, format, write protection and read-back paths.',
+        'cycle-exact IEC propagation, D64 directory, KERNAL LOAD, SAVE, format, write ' +
+        'protection and read-back paths.',
     );
   } finally {
     stopObservingIec();

@@ -8,7 +8,6 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { BreakpointError } from '../../core/cpu/BreakpointError';
 import { Cpu6502 } from '../../core/cpu/Cpu6502';
 import { CpuBusCycleInvariantError } from '../../core/cpu/CpuBusCycleInvariantError';
 import { CpuIrqLine } from '../../core/cpu/CpuIrqLine';
@@ -27,7 +26,7 @@ export class Drive1541Machine {
     completeCpuBusCycle: () => this.synchronizeInterruptInput(),
     startCpuBusCycle: () => {
       this.observedBusCycles += 1;
-      this.advanceHardware(1);
+      this.advanceHardwareOneCycle();
     },
   };
 
@@ -45,26 +44,28 @@ export class Drive1541Machine {
     return this.cycleCount;
   }
 
+  /** 推进驱动器 CPU 的一个真实总线周期。 */
+  clockCycle(checkBreakpoints = false): number {
+    this.clockDirectCycle(checkBreakpoints);
+    return 1;
+  }
+
+  /** 推进一批相邻总线周期。 */
+  clockCycles(cycles: number, checkBreakpoints = false): number {
+    if (!Number.isSafeInteger(cycles) || cycles < 0) {
+      throw new RangeError('1541 CPU cycles must be a non-negative safe integer.');
+    }
+    for (let cycle = 0; cycle < cycles; cycle += 1) {
+      this.clockDirectCycle(checkBreakpoints);
+    }
+    return cycles;
+  }
+
   executeInstruction(checkBreakpoints = false): number {
     const operationStartCycle = this.cycleCount;
-    this.observedBusCycles = 0;
-    const previousObserver = this.memory.setCpuBusCycleObserver(this.cpuBusCycleObserver);
-
-    try {
-      const interruptCycles = this.servicePendingInterrupt();
-      if (interruptCycles > 0) {
-        this.completeCpuOperation(interruptCycles);
-        return this.cycleCount - operationStartCycle;
-      }
-      const cycles = this.cpu.executeInstruction(checkBreakpoints);
-      this.completeCpuOperation(cycles);
-      return this.cycleCount - operationStartCycle;
-    } catch (error: unknown) {
-      if (error instanceof BreakpointError) this.completeCpuOperation(error.cyclesConsumed);
-      throw error;
-    } finally {
-      this.memory.setCpuBusCycleObserver(previousObserver);
-    }
+    do this.clockDirectCycle(checkBreakpoints);
+    while (!this.cpu.isAtInstructionBoundary && !this.cpu.isJammed);
+    return this.cycleCount - operationStartCycle;
   }
 
   /** 通过驱动器自己的 CPU 总线执行七周期 /RESET，并同步推进 VIA 与磁盘位流。 */
@@ -87,11 +88,7 @@ export class Drive1541Machine {
       throw new RangeError('1541 hardware cycles must be a non-negative safe integer.');
     }
     for (let cycle = 0; cycle < cycles; cycle += 1) {
-      this.cycleCount += 1;
-      this.mechanism.tick(1);
-      this.memory.iecVia.tick(1);
-      this.memory.diskVia.tick(1);
-      this.synchronizeInterruptInput();
+      this.advanceHardwareOneCycle();
     }
   }
 
@@ -104,19 +101,35 @@ export class Drive1541Machine {
     this.stopObservingByteReadyEdge();
   }
 
-  private servicePendingInterrupt(): number {
+  private beginPendingInterruptSequence(): void {
     this.synchronizeInterruptInput();
     const boundaryClock = this.cycleCount + DRIVE_CPU_BOUNDARY_CLOCK_OFFSET;
-    let interruptCycles = 0;
     if (this.irqLine.isPending(boundaryClock)) {
       const assertedCycles = this.irqLine.assertedCycles(boundaryClock);
       if (this.cpu.canAcceptMaskableInterrupt(assertedCycles)) {
         this.irqLine.acknowledge();
-        interruptCycles = this.cpu.serviceMaskableInterrupt();
+        this.cpu.beginMaskableInterruptSequence();
       }
     }
     this.irqLine.completeCpuBoundaryPoll();
-    return interruptCycles;
+  }
+
+  private clockDirectCycle(checkBreakpoints: boolean): void {
+    if (this.cpu.isAtInstructionBoundary) this.beginPendingInterruptSequence();
+    this.advanceHardwareOneCycle();
+    try {
+      this.cpu.clockCycle(checkBreakpoints);
+    } finally {
+      this.synchronizeInterruptInput();
+    }
+  }
+
+  private advanceHardwareOneCycle(): void {
+    this.cycleCount += 1;
+    this.mechanism.tick(1);
+    this.memory.iecVia.tick(1);
+    this.memory.diskVia.tick(1);
+    this.synchronizeInterruptInput();
   }
 
   private synchronizeInterruptInput(): void {

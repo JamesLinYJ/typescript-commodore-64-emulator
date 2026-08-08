@@ -37,6 +37,7 @@
     "verify:cia:ports": "node --import tsx tools/verifyCiaPortReference.ts",
     "verify:via": "node --import tsx tools/verifyMos6522Reference.ts",
     "verify:drive": "node --import tsx tools/verifyDrive1541Reference.ts",
+    "verify:drive:iec-delay": "node --import tsx tools/verifyDrive1541Reference.ts --iec-delay-only",
     "verify:drive:write-protect": "node --import tsx tools/verifyDrive1541Reference.ts --write-protect-only",
     "verify:drive:disk-change": "node --import tsx tools/verifyDrive1541Reference.ts --disk-change-only",
     "verify:drive:hls": "node --import tsx tools/verifyDrive1541Reference.ts --hls-only",

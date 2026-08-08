@@ -29,6 +29,9 @@ const REFERENCE_SOURCE = {
 const CPU_ADDRESS_SPACE_SIZE = 0x1_0000;
 const CPU_STACK_PAGE = 0x0100;
 const OPCODE_COUNT = 0x100;
+const JAM_OPCODES = new Set([
+  0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xb2, 0xd2, 0xf2,
+]);
 
 type ReferenceBusAccessKind = 'read' | 'write';
 type ReferenceMemoryByte = readonly [address: number, value: number];
@@ -344,6 +347,51 @@ function verifyCase(
     assertRegisters(cpu.getRegisters(), test.final);
     memory.assertFinalMemory(test.final.ram);
     assertBusCycles(memory.accesses, test.cycles);
+
+    // 同一份固定样本还要逐周期驱动新内核。每次调用只允许产生一个
+    // 字节总线访问，防止 readWord/writeWord 等批量路径悄然破坏可暂停性。
+    memory.beginCase(test.initial.ram);
+    cpu.restoreRegisters(registersFromState(test.initial));
+    const jammedInstruction = JAM_OPCODES.has(opcodeByte);
+    for (let cycleIndex = 0; cycleIndex < test.cycles.length; cycleIndex += 1) {
+      const accessCountBefore = memory.accesses.length;
+      const completed = cpu.clockCycle();
+      const accessCountAfter = memory.accesses.length;
+      if (accessCountAfter !== accessCountBefore + 1) {
+        throw new Error(
+          `cycle ${cycleIndex + 1} emitted ${accessCountAfter - accessCountBefore} bus accesses`,
+        );
+      }
+
+      const actualAccess = memory.accesses[cycleIndex];
+      const expectedAccess = test.cycles[cycleIndex];
+      assertBusCycles(
+        actualAccess === undefined ? [] : [actualAccess],
+        expectedAccess === undefined ? [] : [expectedAccess],
+      );
+      if (completed !== cpu.isAtInstructionBoundary) {
+        throw new Error(`cycle ${cycleIndex + 1} boundary return disagrees with CPU state`);
+      }
+
+      if (jammedInstruction) {
+        if (completed || cpu.isAtInstructionBoundary) {
+          throw new Error(`JAM exposed an instruction boundary on cycle ${cycleIndex + 1}`);
+        }
+        if (cycleIndex >= 1 && !cpu.isJammed) {
+          throw new Error(`JAM was not latched after cycle ${cycleIndex + 1}`);
+        }
+      } else {
+        const expectedBoundary = cycleIndex === test.cycles.length - 1;
+        if (completed !== expectedBoundary) {
+          throw new Error(
+            `cycle ${cycleIndex + 1} boundary expected ${expectedBoundary}, received ${completed}`,
+          );
+        }
+      }
+    }
+    assertRegisters(cpu.getRegisters(), test.final);
+    memory.assertFinalMemory(test.final.ram);
+    assertBusCycles(memory.accesses, test.cycles);
   } catch (error: unknown) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -377,7 +425,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `PASS SingleStepTests MOS 6502 (${REFERENCE_SOURCE.commit.slice(0, 12)}): ${testCount.toLocaleString('en-US')} register, memory, and exact bus-cycle samples across all 256 opcodes.`,
+    `PASS SingleStepTests MOS 6502 (${REFERENCE_SOURCE.commit.slice(0, 12)}): ${testCount.toLocaleString('en-US')} atomic and cycle-resumable register, memory, and exact bus-cycle samples across all 256 opcodes.`,
   );
 }
 

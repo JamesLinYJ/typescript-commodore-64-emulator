@@ -145,6 +145,47 @@ describe('Cpu6502', () => {
     ).toThrow(/program counter/);
   });
 
+  it('rejects atomic entry points while a resumable instruction is active', () => {
+    const { cpu, memory } = createTracingCpu([0xad, 0x00, 0x04]); // LDA $0400
+    memory.bytes[0x0400] = 0x42;
+
+    expect(cpu.clockCycle()).toBe(false);
+    const activeState = cpu.getRegisters();
+    const activeAccessCount = memory.accesses.length;
+
+    expect(() => cpu.executeInstruction()).toThrow(/cycle sequence/);
+    expect(() => cpu.nmi()).toThrow(/cycle sequence/);
+    expect(() => cpu.irq()).toThrow(/cycle sequence/);
+    expect(() => cpu.serviceMaskableInterrupt()).toThrow(/cycle sequence/);
+    expect(cpu.getRegisters()).toEqual(activeState);
+    expect(memory.accesses).toHaveLength(activeAccessCount);
+
+    expect(cpu.clockCycle()).toBe(false);
+    expect(cpu.clockCycle()).toBe(false);
+    expect(cpu.clockCycle()).toBe(true);
+    expect(cpu.getRegisters()).toMatchObject({ accumulator: 0x42, programCounter: 0x0203 });
+  });
+
+  it('wraps atomic and resumable instruction fetches across the 16-bit address boundary', () => {
+    for (const execution of ['atomic', 'resumable'] as const) {
+      const { cpu, memory } = createTracingCpu([0xea]);
+      memory.bytes[0xffff] = 0xa9; // LDA #$42
+      memory.bytes[0x0000] = 0x42;
+      cpu.restoreRegisters({ ...cpu.getRegisters(), programCounter: 0xffff });
+      memory.clearTrace();
+
+      if (execution === 'atomic') {
+        expect(cpu.executeInstruction()).toBe(2);
+      } else {
+        expect(cpu.clockCycle()).toBe(false);
+        expect(cpu.clockCycle()).toBe(true);
+      }
+
+      expect(cpu.getRegisters()).toMatchObject({ accumulator: 0x42, programCounter: 0x0001 });
+      expect(memory.accesses.map(({ address }) => address)).toEqual([0xffff, 0x0000]);
+    }
+  });
+
   it('makes ANC carry equal to the result sign instead of preserving the old carry', () => {
     const { cpu } = createTestCpu([0x0b, 0xb8]);
     cpu.restoreRegisters({
