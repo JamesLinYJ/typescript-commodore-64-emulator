@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { getSid6581FilterModel } from '../../src/devices/Sid6581FilterModel';
 import { SidFilter } from '../../src/devices/SidFilter';
 import { SID_MODEL } from '../../src/devices/SidModel';
 import { SID_FILTER_BIT } from '../../src/devices/sidRegisters';
@@ -63,5 +64,13 @@ describe('SidFilter', () => {
     });
 
     expect(actualPcm).toEqual(expectedPcm);
+  });
+
+  it('rejects a public integrator cutoff value that cannot address the gate table', () => {
+    const model = getSid6581FilterModel();
+
+    expect(() => model.integrate(0, model.createIntegratorState(), 2 ** 32)).toThrowError(
+      RangeError,
+    );
   });
 });

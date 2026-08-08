@@ -30,6 +30,17 @@ class InterruptTestCartridge implements C64CartridgePort {
   readonly gameLineHigh = true;
   irqLineLow = false;
   nmiLineLow = false;
+  private elapsedCycles = 0;
+  private irqAssertionCycle: number | undefined;
+  private nmiAssertionCycle: number | undefined;
+
+  assertIrqAfter(cycles: number): void {
+    this.irqAssertionCycle = this.elapsedCycles + cycles;
+  }
+
+  assertNmiAfter(cycles: number): void {
+    this.nmiAssertionCycle = this.elapsedCycles + cycles;
+  }
 
   readIo1(): C64CartridgeReadResult {
     return null;
@@ -48,12 +59,21 @@ class InterruptTestCartridge implements C64CartridgePort {
   }
 
   reset(): void {
+    this.elapsedCycles = 0;
+    this.irqAssertionCycle = undefined;
+    this.nmiAssertionCycle = undefined;
     this.irqLineLow = false;
     this.nmiLineLow = false;
   }
 
-  tick(): void {
-    // 测试卡带没有时钟状态。
+  tick(cycles: number): void {
+    this.elapsedCycles += cycles;
+    if (this.irqAssertionCycle !== undefined && this.elapsedCycles >= this.irqAssertionCycle) {
+      this.irqLineLow = true;
+    }
+    if (this.nmiAssertionCycle !== undefined && this.elapsedCycles >= this.nmiAssertionCycle) {
+      this.nmiLineLow = true;
+    }
   }
 
   writeIo1(): void {
@@ -137,6 +157,31 @@ describe('C64Machine', () => {
     expect(memory.vic.currentRasterCycle).toBe(56);
   });
 
+  it('drives the current CPU read byte before dynamic bad-line C-accesses sample the bus', () => {
+    const { cpu, memory } = createC64System();
+    const opcodeAddress = 0x0200;
+    memory.ram[opcodeAddress] = 0xea; // NOP；动态坏线前三列应看到低四位 $A。
+    memory.write(0x0300, 0xab); // 制造与当前读不同的上一总线值，暴露相位倒置。
+    memory.vic.write(
+      VIC_REGISTER.screenControl1,
+      VIC_SCREEN_CONTROL_1_BIT.displayEnable | VIC_SCREEN_CONTROL_1_BIT.rowSelect | 0x01,
+    );
+    const machine = new C64Machine(cpu, memory);
+
+    // $30 行先锁存 DEN；$38 行的 YSCROLL 从 1 改为 0 后，周期 21 才动态启动坏线。
+    advanceVicTo(machine, 0x38, 20);
+    memory.vic.write(
+      VIC_REGISTER.screenControl1,
+      VIC_SCREEN_CONTROL_1_BIT.displayEnable | VIC_SCREEN_CONTROL_1_BIT.rowSelect,
+    );
+
+    machine.executeInstruction();
+
+    const fetchState = memory.vic.captureRasterLineState().fetchState;
+    expect([...fetchState.screenMatrix.slice(6, 9)]).toEqual([0xff, 0xff, 0xff]);
+    expect([...fetchState.colorMatrix.slice(6, 9)]).toEqual([0x0a, 0x0a, 0x0a]);
+  });
+
   it('allows an in-progress CPU write to finish while VIC-II BA is low', () => {
     const { cpu, memory } = createC64System();
     memory.ram.set([0x85, 0x10], 0x0200); // STA $10
@@ -196,6 +241,115 @@ describe('C64Machine', () => {
     expect(machine.executeInstruction()).toBe(2);
     expect(machine.executeInstruction()).toBe(7);
     expect(cpu.getRegisters().programCounter).toBe(0x0300);
+  });
+
+  it('allows NMI recognized through BRK T4 to take over the vector while preserving B', () => {
+    const cartridge = new InterruptTestCartridge();
+    const { cpu, firmware, memory } = createC64System();
+    memory.insertCartridge(cartridge);
+    memory.ram[0x0200] = 0x00; // BRK
+    firmware.kernal[0x1ffa] = 0x00;
+    firmware.kernal[0x1ffb] = 0x04;
+    firmware.kernal[0x1ffe] = 0x00;
+    firmware.kernal[0x1fff] = 0x03;
+    const machine = new C64Machine(cpu, memory);
+
+    // 第四个总线周期是 PCL 压栈；此时出现的 NMI 在 T5 向量选择前已经完成两级识别。
+    cartridge.assertNmiAfter(4);
+
+    expect(machine.executeInstruction()).toBe(7);
+    expect(cpu.getRegisters().programCounter).toBe(0x0400);
+    expect((memory.ram[0x01fb] ?? 0) & 0x10).toBe(0x10);
+  });
+
+  it('allows NMI recognized through IRQ T4 to take over the vector while keeping B clear', () => {
+    const cartridge = new InterruptTestCartridge();
+    const { cpu, firmware, memory } = createC64System();
+    memory.insertCartridge(cartridge);
+    memory.ram.set([0x58, 0xea, 0xea], 0x0200); // CLI; IRQ 识别延迟槽；NOP
+    firmware.kernal[0x1ffa] = 0x00;
+    firmware.kernal[0x1ffb] = 0x04;
+    firmware.kernal[0x1ffe] = 0x00;
+    firmware.kernal[0x1fff] = 0x03;
+    const machine = new C64Machine(cpu, memory);
+
+    cartridge.irqLineLow = true;
+    expect(machine.executeInstruction()).toBe(2);
+    expect(machine.executeInstruction()).toBe(2);
+    cartridge.assertNmiAfter(4);
+
+    expect(machine.executeInstruction()).toBe(7);
+    expect(cpu.getRegisters().programCounter).toBe(0x0400);
+    expect((memory.ram[0x01fb] ?? 0) & 0x10).toBe(0x00);
+  });
+
+  it('defers an NMI first recognized during IRQ T5 until after one handler instruction', () => {
+    const cartridge = new InterruptTestCartridge();
+    const { cpu, firmware, memory } = createC64System();
+    memory.insertCartridge(cartridge);
+    memory.ram.set([0x58, 0xea, 0xea], 0x0200); // CLI；IRQ 识别延迟槽；NOP。
+    memory.ram[0x0300] = 0x48; // IRQ handler: PHA
+    firmware.kernal[0x1ffa] = 0x00;
+    firmware.kernal[0x1ffb] = 0x04;
+    firmware.kernal[0x1ffe] = 0x00;
+    firmware.kernal[0x1fff] = 0x03;
+    const machine = new C64Machine(cpu, memory);
+
+    cartridge.irqLineLow = true;
+    expect(machine.executeInstruction()).toBe(2);
+    expect(machine.executeInstruction()).toBe(2);
+    // IRQ 压 P 的 T5 才捕获 NMI；它已经错过本次向量选择。
+    cartridge.assertNmiAfter(5);
+
+    expect(machine.executeInstruction()).toBe(7);
+    expect(cpu.getRegisters().programCounter).toBe(0x0300);
+    expect(machine.executeInstruction()).toBe(3);
+    expect(cpu.getRegisters().programCounter).toBe(0x0301);
+    expect(machine.executeInstruction()).toBe(7);
+    expect(cpu.getRegisters().programCounter).toBe(0x0400);
+  });
+
+  it('defers an NMI first recognized during BRK T5 until after one handler instruction', () => {
+    const cartridge = new InterruptTestCartridge();
+    const { cpu, firmware, memory } = createC64System();
+    memory.insertCartridge(cartridge);
+    memory.ram[0x0200] = 0x00; // BRK
+    memory.ram[0x0300] = 0xea; // IRQ/BRK handler: NOP
+    firmware.kernal[0x1ffa] = 0x00;
+    firmware.kernal[0x1ffb] = 0x04;
+    firmware.kernal[0x1ffe] = 0x00;
+    firmware.kernal[0x1fff] = 0x03;
+    const machine = new C64Machine(cpu, memory);
+
+    // 第五个总线周期才出现的边沿错过本次向量选择，不能产生混合或提前向量。
+    cartridge.assertNmiAfter(5);
+
+    expect(machine.executeInstruction()).toBe(7);
+    expect(cpu.getRegisters().programCounter).toBe(0x0300);
+    expect(machine.executeInstruction()).toBe(2);
+    expect(cpu.getRegisters().programCounter).toBe(0x0301);
+    expect(machine.executeInstruction()).toBe(7);
+    expect(cpu.getRegisters().programCounter).toBe(0x0400);
+  });
+
+  it('does not reinterpret the I flag set by BRK as a sampled pre-BRK IRQ', () => {
+    const cartridge = new InterruptTestCartridge();
+    const { cpu, firmware, memory } = createC64System();
+    memory.insertCartridge(cartridge);
+    memory.ram.set([0x58, 0xea, 0x00], 0x0200); // CLI; NOP; BRK
+    memory.ram[0x0300] = 0xea; // BRK handler: NOP
+    firmware.kernal[0x1ffe] = 0x00;
+    firmware.kernal[0x1fff] = 0x03;
+    const machine = new C64Machine(cpu, memory);
+
+    expect(machine.executeInstruction()).toBe(2);
+    expect(machine.executeInstruction()).toBe(2);
+    cartridge.assertIrqAfter(4);
+    expect(machine.executeInstruction()).toBe(7);
+    expect(cpu.getRegisters().programCounter).toBe(0x0300);
+
+    expect(machine.executeInstruction()).toBe(2);
+    expect(cpu.getRegisters().programCounter).toBe(0x0301);
   });
 
   it('routes the expansion-port IRQ and NMI pins through the normal CPU boundary timing', () => {

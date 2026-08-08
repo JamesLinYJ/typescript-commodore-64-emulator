@@ -49,6 +49,15 @@ export class SidAudioResampler {
     if (!Number.isFinite(input))
       throw new RangeError(`SID resampler input is not finite: ${input}.`);
 
+    // 通常一个 SID 周期完全落在当前输出采样区间内。先处理这条精确等价的
+    // 快路径，只在跨越采样边界时进入分段循环，避免每个芯片周期都调用 Math.min。
+    if (this.outputRateHz < this.weightUntilOutput) {
+      this.accumulatedArea += input * this.outputRateHz;
+      this.accumulatedWeight += this.outputRateHz;
+      this.weightUntilOutput -= this.outputRateHz;
+      return undefined;
+    }
+
     let inputWeightRemaining = this.outputRateHz;
     let output: number | undefined;
     while (inputWeightRemaining > 0) {

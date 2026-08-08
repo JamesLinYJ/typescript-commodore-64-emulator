@@ -43,6 +43,17 @@ export interface VicBadLineCycle {
   readonly resetRowCounter: boolean;
 }
 
+export interface VicBadLineCycleBuffer {
+  active: boolean;
+  aecLow: boolean;
+  baLow: boolean;
+  condition: boolean;
+  enterDisplayState: boolean;
+  lateVideoCounterReloadColumn: number | undefined;
+  matrixAccess: VicMatrixAccess | undefined;
+  resetRowCounter: boolean;
+}
+
 /**
  * VIC-II 的坏线条件与已经启动的矩阵 DMA 是两个不同状态。
  *
@@ -51,13 +62,24 @@ export interface VicBadLineCycle {
  * 仍尝试 C-access 并从未驱动的八位总线读到 `$FF`。
  */
 export class VicBadLineController {
+  private readonly cpuDataBusMatrixAccesses: readonly VicMatrixAccess[];
+  private readonly videoMemoryMatrixAccesses: readonly VicMatrixAccess[];
   private allowBadLines = false;
   private badLineActive = false;
   private conditionWasActive = false;
   private displayStateEnteredThisLine = false;
   private dmaStartCycle: number | undefined;
 
-  constructor(private readonly timing: VicTiming = PAL_VIC_TIMING) {}
+  constructor(private readonly timing: VicTiming = PAL_VIC_TIMING) {
+    this.cpuDataBusMatrixAccesses = createMatrixAccesses(
+      timing,
+      VIC_MATRIX_ACCESS_SOURCE.cpuDataBus,
+    );
+    this.videoMemoryMatrixAccesses = createMatrixAccesses(
+      timing,
+      VIC_MATRIX_ACCESS_SOURCE.videoMemory,
+    );
+  }
 
   get active(): boolean {
     return this.badLineActive;
@@ -72,6 +94,14 @@ export class VicBadLineController {
   }
 
   tick(signals: VicBadLineSignals): VicBadLineCycle {
+    const result = createBadLineCycleBuffer();
+    this.tickInto(signals, result);
+    if (result.matrixAccess !== undefined) result.matrixAccess = { ...result.matrixAccess };
+    return result;
+  }
+
+  /** 将单周期结果写入调用方专有缓冲；该缓冲不是可长期保留的快照。 */
+  tickInto(signals: VicBadLineSignals, result: VicBadLineCycleBuffer): void {
     if (signals.frameStarted) this.allowBadLines = false;
     if (signals.lineStarted) this.beginRasterLine();
 
@@ -122,16 +152,14 @@ export class VicBadLineController {
       signals.cycle === this.timing.fetch.videoCounterReloadCycle && condition;
 
     this.conditionWasActive = condition;
-    return {
-      active: this.badLineActive,
-      aecLow,
-      baLow,
-      condition,
-      enterDisplayState,
-      lateVideoCounterReloadColumn,
-      matrixAccess,
-      resetRowCounter,
-    };
+    result.active = this.badLineActive;
+    result.aecLow = aecLow;
+    result.baLow = baLow;
+    result.condition = condition;
+    result.enterDisplayState = enterDisplayState;
+    result.lateVideoCounterReloadColumn = lateVideoCounterReloadColumn;
+    result.matrixAccess = matrixAccess;
+    result.resetRowCounter = resetRowCounter;
   }
 
   private get busAcquisitionCycleCount(): number {
@@ -170,13 +198,10 @@ export class VicBadLineController {
     ) {
       return undefined;
     }
-    return {
-      column: this.matrixColumnForCycle(cycle),
-      source:
-        cycle < this.dmaStartCycle + this.busAcquisitionCycleCount
-          ? VIC_MATRIX_ACCESS_SOURCE.cpuDataBus
-          : VIC_MATRIX_ACCESS_SOURCE.videoMemory,
-    };
+    const column = this.matrixColumnForCycle(cycle);
+    return cycle < this.dmaStartCycle + this.busAcquisitionCycleCount
+      ? this.cpuDataBusMatrixAccesses[column]
+      : this.videoMemoryMatrixAccesses[column];
   }
 
   private matrixColumnForCycle(cycle: number): number {
@@ -188,4 +213,27 @@ export class VicBadLineController {
       ),
     );
   }
+}
+
+function createBadLineCycleBuffer(): VicBadLineCycleBuffer {
+  return {
+    active: false,
+    aecLow: false,
+    baLow: false,
+    condition: false,
+    enterDisplayState: false,
+    lateVideoCounterReloadColumn: undefined,
+    matrixAccess: undefined,
+    resetRowCounter: false,
+  };
+}
+
+function createMatrixAccesses(
+  timing: VicTiming,
+  source: VicMatrixAccessSource,
+): readonly VicMatrixAccess[] {
+  const count = timing.fetch.matrixLastCycle - timing.fetch.matrixFirstCycle + 1;
+  return Object.freeze(
+    Array.from({ length: count }, (_, column) => Object.freeze({ column, source })),
+  );
 }

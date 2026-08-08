@@ -11,7 +11,13 @@
 import { byte } from '../shared/numbers';
 import { IoDevice } from './IoDevice';
 import { VicBorderController } from './VicBorderController';
-import { VicCycleSequencer, type VicCycleResult, type VicCycleSignals } from './VicCycleSequencer';
+import {
+  createVicCycleResultBuffer,
+  VicCycleSequencer,
+  type VicCycleResult,
+  type VicCycleResultBuffer,
+  type VicCycleSignals,
+} from './VicCycleSequencer';
 import { VicSprite } from './VicSprite';
 import { VicFetchPipeline, type VicFetchSnapshot } from './VicFetchPipeline';
 import type { VicMemoryBus } from './VicMemoryBus';
@@ -121,6 +127,7 @@ export class VicII extends IoDevice implements VicCycleSignals {
   spriteMulticolor1 = this.paletteColor(0);
 
   private readonly cycleSequencer = new VicCycleSequencer();
+  private readonly cycleResult = createVicCycleResultBuffer();
   private readonly borderController = new VicBorderController();
   private readonly fetchPipeline = new VicFetchPipeline();
   private readonly pixelPipeline = new VicPixelPipeline();
@@ -230,16 +237,31 @@ export class VicII extends IoDevice implements VicCycleSignals {
   }
 
   tickCycle(memory: VicMemoryBus): VicCycleResult {
-    const result = this.cycleSequencer.tick(this);
+    const result = this.advanceCycle(memory);
+    return {
+      ...result,
+      matrixAccess: result.matrixAccess === undefined ? undefined : { ...result.matrixAccess },
+      spriteDataOffsets: { ...result.spriteDataOffsets },
+    };
+  }
+
+  /** 推进一个芯片周期但不生成可保留的诊断快照，供整机主循环使用。 */
+  clockCycle(memory: VicMemoryBus): void {
+    this.advanceCycle(memory);
+  }
+
+  private advanceCycle(memory: VicMemoryBus): VicCycleResultBuffer {
+    const result = this.cycleResult;
+    this.cycleSequencer.tickInto(this, result);
     this.fetchPipeline.executeCycle(result, this, memory);
     const cycleIndex = result.cycle - 1;
-    const borderPixelMask = this.borderController.tick({
-      columnSelect: this.screenWidth === VIC_DISPLAY.standardColumnCount,
-      displayEnabled: this.screenVisible,
-      rasterCycle: result.cycle,
-      rasterLine: result.rasterLine,
-      rowSelect: this.screenHeight === VIC_DISPLAY.standardRowCount,
-    });
+    const borderPixelMask = this.borderController.tickCycle(
+      this.screenWidth === VIC_DISPLAY.standardColumnCount,
+      this.screenVisible,
+      result.cycle,
+      result.rasterLine,
+      this.screenHeight === VIC_DISPLAY.standardRowCount,
+    );
     this.lineBorderPixelMasks[cycleIndex] = borderPixelMask;
     this.lineBorderColors[cycleIndex] = this.borderColor;
     this.pixelPipeline.clockCycle(result, borderPixelMask, this, this.fetchPipeline, this);
@@ -334,9 +356,13 @@ export class VicII extends IoDevice implements VicCycleSignals {
     const horizontalPixels =
       (timing.horizontalOriginPixels + (rasterCycle - 1) * 8) %
       timing.horizontalPositionModuloPixels;
+    // LPX 锁存的是按芯片周期量化的横向计数器，再叠加 6569R3 的相位位；若直接使用
+    // 未量化的 φ1 像素坐标，低三位与相位偏移会被重复计入。
+    const horizontalCounterPixels =
+      horizontalPixels - (horizontalPixels % timing.horizontalCounterGranularityPixels);
     this.lightPenLatched = true;
     this.registers[VIC_REGISTER.lightPenX] = byte(
-      Math.trunc(horizontalPixels / 2) + timing.mos6569R3RegisterOffset,
+      Math.trunc(horizontalCounterPixels / 2) + timing.mos6569R3RegisterOffset,
     );
     this.registers[VIC_REGISTER.lightPenY] = byte(rasterLine);
     this.interruptLatches |= VIC_INTERRUPT_BIT.lightPen;

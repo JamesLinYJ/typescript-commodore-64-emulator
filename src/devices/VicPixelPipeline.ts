@@ -118,6 +118,18 @@ export class VicPixelPipeline {
     const physicalCycleX = (cycle.cycle - 1) * PIXELS_PER_VIC_CYCLE;
     const spriteDisplayMask = fetch.spriteDisplayMask;
 
+    // 边框最终覆盖颜色，且没有活动精灵时也不可能产生碰撞。整周期边框因此可以按
+    // 连续像素段直接写入，避免执行八次不具状态的图形解码。
+    if (borderPixelMask === 0xff && spriteDisplayMask === 0) {
+      const outputStart = physicalCycleX - this.visibleCropPhysicalPixel;
+      const firstOutput = Math.max(0, outputStart);
+      const lastOutput = Math.min(this.outputWidth, outputStart + PIXELS_PER_VIC_CYCLE);
+      for (let outputX = firstOutput; outputX < lastOutput; outputX += 1) {
+        this.linePixels[outputX] = registers.borderColor >>> 0;
+      }
+      return;
+    }
+
     let spriteSpriteCollisionMask = 0;
     let spriteForegroundCollisionMask = 0;
     for (let pixelInCycle = 0; pixelInCycle < PIXELS_PER_VIC_CYCLE; pixelInCycle += 1) {

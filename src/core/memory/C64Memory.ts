@@ -30,7 +30,7 @@ import {
 import {
   C64Pla,
   C64_PLA_TARGET,
-  c64PlaConfigurationCode,
+  c64PlaConfigurationCodeForSignals,
   type C64PlaInputs,
   type C64PlaTarget,
 } from './C64Pla';
@@ -178,6 +178,28 @@ export class C64Memory implements MemoryBus, VicMemoryBus {
   // 该锁存器保存最近一次 CPU 读写周期的八位值，不与 VIC 自己的 φ1 锁存器混用。
   get cpuDataBusValue(): number {
     return this.cpuDataBusLatch;
+  }
+
+  /**
+   * 在 VIC-II 执行当前 φ2 之前，让无读副作用的 CPU 目标驱动数据总线。
+   *
+   * I/O 和卡带读可能清除中断、碰撞锁存或推进 Flash 状态，因此仍在 CPU 读周期
+   * 完成时只执行一次。待这些设备提供无副作用引脚采样后，可将它们纳入同一驱动相位。
+   */
+  driveCpuReadDataBus(address: number): void {
+    const normalized = word(address);
+    if (normalized === C64_MEMORY_LAYOUT.processorPort.directionRegister) {
+      this.latchCpuDataBus(this.processorPort.directionRegister);
+      return;
+    }
+    if (normalized === C64_MEMORY_LAYOUT.processorPort.bankingRegister) {
+      this.latchCpuDataBus(this.processorPort.dataRegister);
+      return;
+    }
+
+    this.synchronizePlaConfiguration();
+    const value = this.readPassivePlaTarget(this.pla.readTarget(normalized), normalized);
+    if (value !== undefined) this.latchCpuDataBus(value);
   }
 
   insertCartridge(cartridge: C64CartridgePort): void {
@@ -360,10 +382,16 @@ export class C64Memory implements MemoryBus, VicMemoryBus {
   }
 
   private synchronizePlaConfiguration(): void {
-    const inputs = this.currentPlaInputs();
-    if (this.pla.configurationCode !== c64PlaConfigurationCode(inputs)) {
-      this.pla.configure(inputs);
-    }
+    const exromLineHigh = this.cartridgePort.exromLineHigh;
+    const gameLineHigh = this.cartridgePort.gameLineHigh;
+    const processorPort = this.processorPort.bankingConfiguration;
+    const configurationCode = c64PlaConfigurationCodeForSignals(
+      gameLineHigh,
+      exromLineHigh,
+      processorPort,
+    );
+    if (this.pla.configurationCode === configurationCode) return;
+    this.pla.configure({ exromLineHigh, gameLineHigh, processorPort });
   }
 
   private readPlaTarget(target: C64PlaTarget, address: number): number {
@@ -396,6 +424,36 @@ export class C64Memory implements MemoryBus, VicMemoryBus {
         return this.resolveCartridgeRead(this.cartridgePort.readRomHigh(address), address, 'ROMH');
       case C64_PLA_TARGET.openBus:
         return this.vic.phi1DataBusValue;
+    }
+  }
+
+  private readPassivePlaTarget(target: C64PlaTarget, address: number): number | undefined {
+    switch (target) {
+      case C64_PLA_TARGET.ram:
+        return this.ram[address]!;
+      case C64_PLA_TARGET.basicRom:
+        return this.readFirmwareByte(
+          'BASIC',
+          this.firmware.basic,
+          address - C64_MEMORY_LAYOUT.basicRom.start,
+        );
+      case C64_PLA_TARGET.kernalRom:
+        return this.readFirmwareByte(
+          'KERNAL',
+          this.firmware.kernal,
+          address - C64_MEMORY_LAYOUT.kernalRom.start,
+        );
+      case C64_PLA_TARGET.characterRom:
+        return this.readFirmwareByte(
+          'character',
+          this.firmware.character,
+          address - C64_MEMORY_LAYOUT.characterRom.start,
+        );
+      case C64_PLA_TARGET.io:
+      case C64_PLA_TARGET.cartridgeLow:
+      case C64_PLA_TARGET.cartridgeHigh:
+      case C64_PLA_TARGET.openBus:
+        return undefined;
     }
   }
 

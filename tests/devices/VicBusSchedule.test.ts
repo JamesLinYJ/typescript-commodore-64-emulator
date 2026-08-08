@@ -10,8 +10,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { vicBusScheduleForCycle } from '../../src/devices/VicBusSchedule';
-import { PAL_VIC_TIMING } from '../../src/devices/VicTiming';
+import { createVicBusSchedule, vicBusScheduleForCycle } from '../../src/devices/VicBusSchedule';
+import { PAL_VIC_TIMING, type VicTiming } from '../../src/devices/VicTiming';
 
 describe('VIC-II PAL bus schedule', () => {
   it('assigns one Phi1 fetch to every cycle and matrix fetches to cycles 15 through 54', () => {
@@ -82,5 +82,27 @@ describe('VIC-II PAL bus schedule', () => {
     expect(() => vicBusScheduleForCycle(0)).toThrow(RangeError);
     expect(() => vicBusScheduleForCycle(64)).toThrow(RangeError);
     expect(() => vicBusScheduleForCycle(1.5)).toThrow(RangeError);
+  });
+
+  it('derives a complete schedule for a non-PAL timing model', () => {
+    const sixtyFiveCycleTiming: VicTiming = {
+      ...PAL_VIC_TIMING,
+      cyclesPerRasterLine: 65,
+      fetch: {
+        ...PAL_VIC_TIMING.fetch,
+        refreshFirstCycle: 9,
+      },
+    };
+    const schedule = createVicBusSchedule(sixtyFiveCycleTiming);
+
+    expect(schedule).toHaveLength(65);
+    expect(schedule[63]).toMatchObject({
+      cycle: 64,
+      phi1: { kind: 'spritePointer', spriteIndex: 3 },
+    });
+    expect(schedule[64]).toMatchObject({
+      cycle: 65,
+      phi1: { byteIndex: 1, kind: 'spriteData', spriteIndex: 3 },
+    });
   });
 });

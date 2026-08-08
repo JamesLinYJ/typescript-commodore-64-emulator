@@ -44,7 +44,9 @@ export class CpuInterruptTiming {
   completeInstruction(instruction: CompletedCpuInstruction): void {
     const { interruptMaskedAfter, interruptMaskedBefore, opcode } = instruction;
     this.previousMaskTransition =
-      opcode === RETURN_FROM_INTERRUPT_OPCODE || interruptMaskedBefore === interruptMaskedAfter
+      opcode === RETURN_FROM_INTERRUPT_OPCODE ||
+      opcode === BREAK_OPCODE ||
+      interruptMaskedBefore === interruptMaskedAfter
         ? 'unchanged'
         : interruptMaskedAfter
           ? 'becameDisabled'
@@ -65,10 +67,22 @@ export class CpuInterruptTiming {
     return assertedCycles >= this.requiredRecognitionCycles();
   }
 
-  acknowledgeInterrupt(): void {
+  canTakeOverInterruptSequenceWithNmi(assertedCycles: number): boolean {
+    // BRK/IRQ 的向量选择发生在独立的 T5 阶段，不继承上一条分支的额外边界延迟。
+    return assertedCycles >= NORMAL_INTERRUPT_RECOGNITION_CYCLES;
+  }
+
+  /**
+   * 完成一次硬件 IRQ/NMI 入口序列。
+   *
+   * NMOS 6502 与 BRK 共用这段“虚拟 BRK”微序列。若 NMI 在压 P 时才成熟，
+   * 它会错过当前向量选择，也不能在向量读完后立即再入；必须先完成 handler
+   * 的首条指令。记住虚拟 BRK 可与真实 BRK 共用同一边界规则。
+   */
+  completeInterruptEntry(): void {
     this.previousMaskTransition = 'unchanged';
     this.previousInstructionDelaysInterrupt = false;
-    this.previousOpcode = undefined;
+    this.previousOpcode = BREAK_OPCODE;
   }
 
   reset(): void {

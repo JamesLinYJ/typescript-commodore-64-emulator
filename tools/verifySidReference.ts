@@ -14,6 +14,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
 import { SidEnvelopeGenerator } from '../src/devices/SidEnvelopeGenerator';
+import { SidExternalFilter } from '../src/devices/SidExternalFilter';
 import { SidFilter } from '../src/devices/SidFilter';
 import { SID_MODEL, type SidModel } from '../src/devices/SidModel';
 import { SidOscillator } from '../src/devices/SidOscillator';
@@ -39,6 +40,13 @@ const FILTER_ORACLE_SOURCE = resolve('tools/reference/resid/ResIdFilterOracle.cp
 const FILTER_ORACLE_EXECUTABLE = resolve(
   REFERENCE_BUILD_DIRECTORY,
   process.platform === 'win32' ? 'ResIdFilterOracle.exe' : 'ResIdFilterOracle',
+);
+const EXTERNAL_FILTER_ORACLE_SOURCE = resolve(
+  'tools/reference/resid/ResIdExternalFilterOracle.cpp',
+);
+const EXTERNAL_FILTER_ORACLE_EXECUTABLE = resolve(
+  REFERENCE_BUILD_DIRECTORY,
+  process.platform === 'win32' ? 'ResIdExternalFilterOracle.exe' : 'ResIdExternalFilterOracle',
 );
 
 interface ReferenceSource {
@@ -82,6 +90,14 @@ const REFERENCE_SOURCES: readonly ReferenceSource[] = [
   {
     fileName: 'filter.cc',
     sha256: 'ab6d96909324ca93f9606d830d7d363750f0c3af31211c34d64d30b776277ffc',
+  },
+  {
+    fileName: 'extfilt.h',
+    sha256: 'c4b6a8d8269c54ed3e8e487d28f80270ab5120b98e9346c3d0c4caeea28cd99b',
+  },
+  {
+    fileName: 'extfilt.cc',
+    sha256: 'ce4ea29de782fcd29ad6862c1b5b72f981f2f9a0afbc1f3c94133040298b896d',
   },
   {
     fileName: 'spline.h',
@@ -444,6 +460,49 @@ const FILTER_SCENARIOS: readonly FilterScenario[] = [
   },
 ] as const;
 
+type ExternalFilterCommand =
+  | { readonly cycles: number; readonly kind: 'clock' }
+  | { readonly kind: 'input'; readonly value: number }
+  | { readonly kind: 'reset' };
+
+interface ExternalFilterScenario {
+  readonly commands: readonly ExternalFilterCommand[];
+  readonly name: string;
+}
+
+const EXTERNAL_FILTER_SCENARIOS: readonly ExternalFilterScenario[] = [
+  {
+    name: 'positive impulse response',
+    commands: [
+      { kind: 'reset' },
+      { kind: 'input', value: 0x4000 },
+      { kind: 'clock', cycles: 2 },
+      { kind: 'input', value: 0 },
+      { kind: 'clock', cycles: 2_046 },
+    ],
+  },
+  {
+    name: 'signed full-scale transitions',
+    commands: [
+      { kind: 'reset' },
+      { kind: 'input', value: -0x8000 },
+      { kind: 'clock', cycles: 1_024 },
+      { kind: 'input', value: 0x7fff },
+      { kind: 'clock', cycles: 1_024 },
+      { kind: 'input', value: -1 },
+      { kind: 'clock', cycles: 257 },
+    ],
+  },
+  {
+    name: 'high-pass DC settling',
+    commands: [
+      { kind: 'reset' },
+      { kind: 'input', value: 12_000 },
+      { kind: 'clock', cycles: 32_768 },
+    ],
+  },
+] as const;
+
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
@@ -550,6 +609,7 @@ async function buildOracles(): Promise<void> {
   compileOracle(ENVELOPE_ORACLE_SOURCE, ENVELOPE_ORACLE_EXECUTABLE, ['envelope.cc', 'dac.cc']);
   compileOracle(OSCILLATOR_ORACLE_SOURCE, OSCILLATOR_ORACLE_EXECUTABLE, ['wave.cc', 'dac.cc']);
   compileOracle(FILTER_ORACLE_SOURCE, FILTER_ORACLE_EXECUTABLE, ['filter.cc', 'dac.cc']);
+  compileOracle(EXTERNAL_FILTER_ORACLE_SOURCE, EXTERNAL_FILTER_ORACLE_EXECUTABLE, ['extfilt.cc']);
 }
 
 async function generateWaveformHeaders(): Promise<void> {
@@ -898,6 +958,104 @@ function verifyFilterScenarios(): number {
   return actual.length;
 }
 
+function serializeExternalFilterScenarios(scenarios: readonly ExternalFilterScenario[]): string {
+  return scenarios
+    .flatMap((scenario) =>
+      scenario.commands.map((command) => {
+        switch (command.kind) {
+          case 'clock':
+            return `CLOCK ${command.cycles}`;
+          case 'input':
+            return `INPUT ${command.value}`;
+          case 'reset':
+            return 'RESET';
+        }
+      }),
+    )
+    .join('\n');
+}
+
+function runExternalFilterOracle(scenarios: readonly ExternalFilterScenario[]): number[] {
+  const result = spawnSync(EXTERNAL_FILTER_ORACLE_EXECUTABLE, [], {
+    encoding: 'utf8',
+    input: serializeExternalFilterScenarios(scenarios),
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error) {
+    throw new Error('Unable to execute the reSID external-filter oracle.', {
+      cause: result.error,
+    });
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `reSID oracle ${basename(EXTERNAL_FILTER_ORACLE_EXECUTABLE)} failed with exit ${String(result.status)}: ${result.stderr}`,
+    );
+  }
+  const output = result.stdout.trim();
+  return output.length === 0 ? [] : output.split(/\s+/u).map(Number);
+}
+
+function runTypeScriptExternalFilter(scenarios: readonly ExternalFilterScenario[]): number[] {
+  const filter = new SidExternalFilter(1_000_000);
+  const output: number[] = [];
+  let input = 0;
+  for (const scenario of scenarios) {
+    for (const command of scenario.commands) {
+      switch (command.kind) {
+        case 'clock':
+          for (let cycle = 0; cycle < command.cycles; cycle += 1) {
+            output.push(filter.clock(input));
+          }
+          break;
+        case 'input':
+          input = command.value;
+          break;
+        case 'reset':
+          filter.reset();
+          input = 0;
+          break;
+      }
+    }
+  }
+  return output;
+}
+
+function externalFilterScenarioAtSample(sample: number): {
+  readonly cycle: number;
+  readonly name: string;
+} {
+  let firstSample = 0;
+  for (const scenario of EXTERNAL_FILTER_SCENARIOS) {
+    const sampleCount = scenario.commands.reduce(
+      (total, command) => total + (command.kind === 'clock' ? command.cycles : 0),
+      0,
+    );
+    if (sample < firstSample + sampleCount) {
+      return { cycle: sample - firstSample + 1, name: scenario.name };
+    }
+    firstSample += sampleCount;
+  }
+  throw new RangeError(`External-filter sample ${sample} is outside all scenarios.`);
+}
+
+function verifyExternalFilterScenarios(): number {
+  const reference = runExternalFilterOracle(EXTERNAL_FILTER_SCENARIOS);
+  const actual = runTypeScriptExternalFilter(EXTERNAL_FILTER_SCENARIOS);
+  if (actual.length !== reference.length) {
+    throw new Error(
+      `TypeScript produced ${actual.length} external-filter samples, reSID produced ${reference.length}.`,
+    );
+  }
+  for (let sample = 0; sample < reference.length; sample += 1) {
+    if (actual[sample] === reference[sample]) continue;
+    const location = externalFilterScenarioAtSample(sample);
+    throw new Error(
+      `${location.name}: external-filter mismatch at sampled cycle ${location.cycle}; TypeScript=${String(actual[sample])}, reSID=${String(reference[sample])}.`,
+    );
+  }
+  return actual.length;
+}
+
 async function main(): Promise<void> {
   await buildOracles();
   let verifiedEnvelopeCycles = 0;
@@ -909,8 +1067,9 @@ async function main(): Promise<void> {
     verifiedOscillatorSamples += verifyOscillatorScenario(scenario);
   }
   const verifiedFilterSamples = verifyFilterScenarios();
+  const verifiedExternalFilterSamples = verifyExternalFilterScenarios();
   console.log(
-    `PASS reSID SID oracle (${RESID_REVISION.slice(0, 12)}): ${ENVELOPE_SCENARIOS.length} envelope scenarios / ${verifiedEnvelopeCycles.toLocaleString('en-US')} cycles; ${OSCILLATOR_SCENARIOS.length} oscillator scenarios / ${verifiedOscillatorSamples.toLocaleString('en-US')} samples; ${FILTER_SCENARIOS.length} MOS 6581/8580 filter scenarios / ${verifiedFilterSamples.toLocaleString('en-US')} samples.`,
+    `PASS reSID SID oracle (${RESID_REVISION.slice(0, 12)}): ${ENVELOPE_SCENARIOS.length} envelope scenarios / ${verifiedEnvelopeCycles.toLocaleString('en-US')} cycles; ${OSCILLATOR_SCENARIOS.length} oscillator scenarios / ${verifiedOscillatorSamples.toLocaleString('en-US')} samples; ${FILTER_SCENARIOS.length} MOS 6581/8580 filter scenarios / ${verifiedFilterSamples.toLocaleString('en-US')} samples; ${EXTERNAL_FILTER_SCENARIOS.length} board external-filter scenarios / ${verifiedExternalFilterSamples.toLocaleString('en-US')} samples.`,
   );
 }
 

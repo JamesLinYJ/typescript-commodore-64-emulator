@@ -25,6 +25,19 @@ npm run benchmark:emulation
 120 帧滚动窗口的呈现 FPS、p95 帧耗时和超出 19.95 ms PAL 预算的帧数；两组数据分别
 衡量核心吞吐与宿主呈现，避免把显示刷新率误当成模拟器峰值性能。
 
+真实程序负载基准会校验三份固件和内置 Voidrunner PRG 的 SHA-256，从 BASIC 启动程序，
+再让三声部 MOS 6581 波形经过活动滤波器并逐帧排出音频样本：
+
+```bash
+npm run benchmark:real
+npm run benchmark:real -- --drive
+```
+
+第二种模式还会逐周期推进真实 1541-II ROM；它需要先运行一次 `npm run verify:drive`，
+以取得并校验 `output/reference/1541-II.251968-03.bin`。输出包含预热/采样帧数、吞吐、
+p50/p95/p99 帧耗时、PAL 实时倍率和 SID 样本数；基准只衡量整机核心，不包含 DOM/Canvas
+呈现时间。
+
 硬件外部参考门禁：
 
 ```bash
@@ -37,6 +50,7 @@ npm run verify:drive:write-protect
 npm run verify:drive:disk-change
 npm run verify:drive:hls
 npm run verify:cia:ports
+npm run verify:cia:irqnmi
 npm run verify:vic
 npm run verify:vic:sprites
 npm run verify:prg-autostart
@@ -91,6 +105,10 @@ SO/SYNC 时序测量与上游两张预期表逐字节完全一致。
 `verify:cia:ports` 会运行固定 revision 与 SHA-256 的 VICE `ciaports.prg`，并把项目输出
 与六组真实 C64 键盘端口采样向量逐字节比较。它覆盖普通按键、左右 Shift、Shift Lock
 以及输出引脚相互驱动时的软件可观察结果。
+
+`verify:cia:irqnmi` 会运行 VICE revision 46176 且 SHA-256 固定的
+`irqnmi-new.prg`，逐格核对 19×19 组 CIA1 IRQ 与 CIA2 NMI 相对时序。该矩阵会同时覆盖
+NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执行一条 handler 指令的迟到边沿。
 
 `verify:vic` 会验证 PAL 光栅 IRQ，并把动态坏线、hires/multicolor 精灵优先级以及
 `$D017` 在第 54、57 周期切换时的四个完整画面分别与 VICE revision 46176 参考 PNG

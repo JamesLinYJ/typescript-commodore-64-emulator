@@ -17,8 +17,13 @@
 export class SidExternalFilter {
   private static readonly stateFractionBits = 11;
   private static readonly stateScale = 1 << SidExternalFilter.stateFractionBits;
+  private static readonly stateReciprocal = 2 ** -SidExternalFilter.stateFractionBits;
   private static readonly lowPassCoefficientBits = 7;
+  private static readonly lowPassCoefficientReciprocal =
+    2 ** -SidExternalFilter.lowPassCoefficientBits;
   private static readonly highPassCoefficientBits = 17;
+  private static readonly highPassCoefficientReciprocal =
+    2 ** -SidExternalFilter.highPassCoefficientBits;
 
   private readonly lowPassCoefficient: number;
   private readonly highPassCoefficient: number;
@@ -50,10 +55,7 @@ export class SidExternalFilter {
   }
 
   get outputPcm(): number {
-    return arithmeticShiftRight(
-      this.lowPassState - this.highPassState,
-      SidExternalFilter.stateFractionBits,
-    );
+    return Math.floor((this.lowPassState - this.highPassState) * SidExternalFilter.stateReciprocal);
   }
 
   reset(): void {
@@ -67,13 +69,17 @@ export class SidExternalFilter {
     }
 
     const scaledInput = inputPcm * SidExternalFilter.stateScale;
-    const lowPassDelta = arithmeticShiftRight(
-      this.lowPassCoefficient * (scaledInput - this.lowPassState),
-      SidExternalFilter.lowPassCoefficientBits,
+    // 三个除数都是固定的 2 的幂；预计算可精确表示的二进制倒数，避免在每个
+    // SID 周期重复求幂和跨函数调用，Math.floor 仍保留 C++ 有符号右移的向下舍入。
+    const lowPassDelta = Math.floor(
+      this.lowPassCoefficient *
+        (scaledInput - this.lowPassState) *
+        SidExternalFilter.lowPassCoefficientReciprocal,
     );
-    const highPassDelta = arithmeticShiftRight(
-      this.highPassCoefficient * (this.lowPassState - this.highPassState),
-      SidExternalFilter.highPassCoefficientBits,
+    const highPassDelta = Math.floor(
+      this.highPassCoefficient *
+        (this.lowPassState - this.highPassState) *
+        SidExternalFilter.highPassCoefficientReciprocal,
     );
     this.lowPassState += lowPassDelta;
     this.highPassState += highPassDelta;
@@ -89,9 +95,4 @@ function quantizeRcCoefficient(
 ): number {
   const coefficient = cycleSeconds / (cycleSeconds + resistanceOhms * capacitanceFarads);
   return Math.round(coefficient * 2 ** fractionalBits);
-}
-
-/** JavaScript 的位运算会先截成 32 位；模拟器状态使用安全整数以免乘法悄悄溢出。 */
-function arithmeticShiftRight(value: number, bits: number): number {
-  return Math.floor(value / 2 ** bits);
 }

@@ -89,14 +89,30 @@ describe('VicII', () => {
     );
   });
 
-  it('latches the current PAL beam one cycle after the control-port light-pen edge', () => {
+  it('latches the quantized PAL beam one cycle after the control-port light-pen edge', () => {
     const vic = new VicII();
     vic.setLightPenInputHigh(false);
 
     expect(vic.read(VIC_REGISTER.interruptStatus) & VIC_INTERRUPT_BIT.lightPen).toBe(0);
     vic.tickCycle(TEST_VIC_MEMORY);
 
-    expect(vic.read(VIC_REGISTER.lightPenX)).toBe(0xcc);
+    expect(vic.read(VIC_REGISTER.lightPenX)).toBe(0xca);
+    expect(vic.read(VIC_REGISTER.lightPenY)).toBe(0x00);
+    expect(vic.read(VIC_REGISTER.interruptStatus) & VIC_INTERRUPT_BIT.lightPen).toBe(
+      VIC_INTERRUPT_BIT.lightPen,
+    );
+  });
+
+  it('quantizes the 6569R3 light-pen X counter before applying its phase bits', () => {
+    const vic = new VicII();
+    for (let cycle = 0; cycle < 13; cycle += 1) vic.tickCycle(TEST_VIC_MEMORY);
+
+    vic.setLightPenInputHigh(false);
+    expect(vic.read(VIC_REGISTER.interruptStatus) & VIC_INTERRUPT_BIT.lightPen).toBe(0);
+    vic.tickCycle(TEST_VIC_MEMORY);
+
+    expect(vic.currentRasterCycle).toBe(14);
+    expect(vic.read(VIC_REGISTER.lightPenX)).toBe(0x02);
     expect(vic.read(VIC_REGISTER.lightPenY)).toBe(0x00);
     expect(vic.read(VIC_REGISTER.interruptStatus) & VIC_INTERRUPT_BIT.lightPen).toBe(
       VIC_INTERRUPT_BIT.lightPen,

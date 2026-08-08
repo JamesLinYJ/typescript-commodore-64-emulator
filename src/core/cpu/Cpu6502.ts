@@ -25,6 +25,7 @@ interface CpuEvents {
 }
 
 export type CpuInstructionObserver = (address: number, opcode: number) => void;
+export type CpuNmiTakeoverProbe = () => boolean;
 
 const NO_ADDRESSING_MODE: AddressingMode = () => 0;
 const CPU_BYTE_MAX = 0xff;
@@ -66,6 +67,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   private readonly opcodes: readonly CpuOpcode[];
   private readonly znTable: Uint8Array;
   private instructionObserver: CpuInstructionObserver | undefined;
+  private nmiTakeoverProbe: CpuNmiTakeoverProbe | undefined;
   private jamBusCycleIndex = 0;
   private jammed = false;
   private memoryAccess = CpuMemoryAccess.Read;
@@ -139,7 +141,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     this.push((this.p & ~CpuStatusFlag.Break) | CpuStatusFlag.Unused);
     this.pc = this.memory.readWord(CPU_VECTOR.nonMaskableInterrupt);
     this.p |= CpuStatusFlag.InterruptDisable;
-    this.interruptTiming.acknowledgeInterrupt();
+    this.interruptTiming.completeInterruptEntry();
     return 7;
   }
   /**
@@ -168,6 +170,10 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     return !this.jammed && this.interruptTiming.canAcceptNonMaskableInterrupt(assertedCycles);
   }
 
+  canTakeOverInterruptSequenceWithNmi(assertedCycles: number): boolean {
+    return !this.jammed && this.interruptTiming.canTakeOverInterruptSequenceWithNmi(assertedCycles);
+  }
+
   serviceMaskableInterrupt(): number {
     if (this.jammed) return 0;
 
@@ -175,9 +181,9 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     this.dummyRead(this.pc);
     this.pushWord(this.pc);
     this.push((this.p & ~CpuStatusFlag.Break) | CpuStatusFlag.Unused);
-    this.pc = this.memory.readWord(CPU_VECTOR.interruptRequest);
+    this.pc = this.readBrkOrIrqVector();
     this.p |= CpuStatusFlag.InterruptDisable;
-    this.interruptTiming.acknowledgeInterrupt();
+    this.interruptTiming.completeInterruptEntry();
     return 7;
   }
 
@@ -288,6 +294,17 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     return previous;
   }
 
+  /**
+   * 安装 BRK/IRQ 向量选择点的 NMI 探针。
+   *
+   * CPU 只在 P 已压栈、尚未读取向量时调用；物理引脚、识别延迟和边沿确认仍由整机拥有。
+   */
+  setNmiTakeoverProbe(probe: CpuNmiTakeoverProbe | undefined): CpuNmiTakeoverProbe | undefined {
+    const previous = this.nmiTakeoverProbe;
+    this.nmiTakeoverProbe = probe;
+    return previous;
+  }
+
   getUseUndocumentedOpcodes() {
     return this.useUndocumentedOpcodes;
   }
@@ -301,7 +318,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     this.pc = word(this.pc + 1);
     this.pushWord(this.pc);
     this.push(this.p | CpuStatusFlag.Break | CpuStatusFlag.Unused);
-    this.pc = this.memory.readWord(CPU_VECTOR.interruptRequest);
+    this.pc = this.readBrkOrIrqVector();
     this.p |= CpuStatusFlag.InterruptDisable;
   }
 
@@ -1252,6 +1269,15 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   private dummyRead(address: number): void {
     this.memory.read(word(address));
+  }
+
+  private readBrkOrIrqVector(): number {
+    // NMOS 6502 到 P 压栈后才最终选择向量。及时成熟的 NMI 因而能接管已经开始的
+    // BRK/IRQ 微序列，但不会改变先前压入的 B 位或返回地址。
+    const vector = this.nmiTakeoverProbe?.()
+      ? CPU_VECTOR.nonMaskableInterrupt
+      : CPU_VECTOR.interruptRequest;
+    return this.memory.readWord(vector);
   }
 
   /**

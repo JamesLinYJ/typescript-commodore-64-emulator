@@ -56,6 +56,15 @@ export class Mos6526SerialPort {
     return this.outputHalfBitsRemaining > 0;
   }
 
+  /** 只有延迟管线中存在事件时，处理器时钟才会改变串行口状态。 */
+  get cycleWorkPending(): boolean {
+    return (
+      this.outputLoadPipeline !== 0 ||
+      this.outputClockPipeline !== 0 ||
+      this.interruptDelayCycles !== undefined
+    );
+  }
+
   reset(): void {
     this.bufferedOutputByte = undefined;
     this.inputBitsReceived = 0;
@@ -122,6 +131,8 @@ export class Mos6526SerialPort {
 
   /** 推进 SDR 装载、完成中断和 CNT 翻转三条独立的内部延迟管线。 */
   tickCycle(): boolean {
+    if (!this.cycleWorkPending) return false;
+
     const outputLoadDue = (this.outputLoadPipeline & 1) !== 0;
     this.outputLoadPipeline >>>= 1;
     if (outputLoadDue) this.loadOutputDataRegister();

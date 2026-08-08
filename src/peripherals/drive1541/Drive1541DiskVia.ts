@@ -117,7 +117,7 @@ export class Drive1541DiskVia extends Mos6522 {
   }
 
   protected override onPortBAccess(): void {
-    // VICE 与 1541 服务手册都显示 VIA2 端口访问会参与 BYTE READY/SOE 应答路径。
+    // 1541 服务手册所示的 VIA2 端口访问会参与 BYTE READY/SOE 应答路径。
     this.mechanismValue?.acknowledgeByteReady();
   }
 

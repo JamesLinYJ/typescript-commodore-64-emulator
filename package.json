@@ -19,6 +19,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "benchmark:emulation": "node --import tsx tools/benchmarkEmulation.ts",
+    "benchmark:real": "node --import tsx tools/benchmarkRealWorkloads.ts",
     "generate:cpu-reference": "node --import tsx tools/generateCpuSingleStepFixture.ts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -31,6 +32,7 @@
     "verify:cia:new": "node --import tsx tools/verifyCiaReference.ts --new-cia",
     "verify:cia:nmi": "node --import tsx tools/verifyCiaReference.ts --nmi",
     "verify:cia:nmi:new": "node --import tsx tools/verifyCiaReference.ts --nmi --new-cia",
+    "verify:cia:irqnmi": "node --import tsx tools/verifyCiaReference.ts --irqnmi --new-cia",
     "verify:cia:serial": "node --import tsx tools/verifyCiaSerialReferences.ts",
     "verify:cia:ports": "node --import tsx tools/verifyCiaPortReference.ts",
     "verify:via": "node --import tsx tools/verifyMos6522Reference.ts",
@@ -45,7 +47,7 @@
     "verify:prg-autostart": "node --import tsx tools/verifyPrgAutostartReference.ts",
     "verify:programs": "node --import tsx tools/verifyBundledPrograms.ts",
     "verify:browser": "node --import tsx tools/verifyBrowser.ts",
-    "verify:reference": "npm run verify:cpu && npm run verify:cpu-single-step && npm run verify:cpu-port && npm run verify:cartridge && npm run verify:easyflash && npm run verify:cia && npm run verify:cia:new && npm run verify:cia:nmi && npm run verify:cia:nmi:new && npm run verify:cia:serial && npm run verify:cia:ports && npm run verify:via && npm run verify:tape && npm run verify:drive && npm run verify:vic && npm run verify:vic:sprites && npm run verify:sid && npm run verify:prg-autostart && npm run verify:programs",
+    "verify:reference": "npm run verify:cpu && npm run verify:cpu-single-step && npm run verify:cpu-port && npm run verify:cartridge && npm run verify:easyflash && npm run verify:cia && npm run verify:cia:new && npm run verify:cia:nmi && npm run verify:cia:nmi:new && npm run verify:cia:irqnmi && npm run verify:cia:serial && npm run verify:cia:ports && npm run verify:via && npm run verify:tape && npm run verify:drive && npm run verify:vic && npm run verify:vic:sprites && npm run verify:sid && npm run verify:prg-autostart && npm run verify:programs",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {

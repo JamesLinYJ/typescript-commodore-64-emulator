@@ -36,13 +36,29 @@ export class VicBorderController {
   constructor(private readonly timing: VicTiming = PAL_VIC_TIMING) {}
 
   tick(signals: VicBorderSignals): number {
-    this.checkHorizontalBorder(signals);
-    const pixelMask = this.drawPixelMask(signals.columnSelect);
+    return this.tickCycle(
+      signals.columnSelect,
+      signals.displayEnabled,
+      signals.rasterCycle,
+      signals.rasterLine,
+      signals.rowSelect,
+    );
+  }
+
+  tickCycle(
+    columnSelect: boolean,
+    displayEnabled: boolean,
+    rasterCycle: number,
+    rasterLine: number,
+    rowSelect: boolean,
+  ): number {
+    this.checkHorizontalBorder(columnSelect, rasterCycle, rasterLine, rowSelect);
+    const pixelMask = this.drawPixelMask(columnSelect);
 
     // 精确模型在当前周期的像素生成后更新垂直触发器，因此顶边界不会提前影响同周期像素。
-    this.checkVerticalBorderTop(signals);
-    this.checkVerticalBorderBottom(signals);
-    if (signals.rasterCycle === 1) this.verticalBorder = this.pendingVerticalBorder;
+    this.checkVerticalBorderTop(displayEnabled, rasterLine, rowSelect);
+    this.checkVerticalBorderBottom(rasterLine, rowSelect);
+    if (rasterCycle === 1) this.verticalBorder = this.pendingVerticalBorder;
 
     return pixelMask;
   }
@@ -54,37 +70,46 @@ export class VicBorderController {
     this.renderedBorder = true;
   }
 
-  private checkHorizontalBorder(signals: VicBorderSignals): void {
-    const leftCycle = signals.columnSelect
+  private checkHorizontalBorder(
+    columnSelect: boolean,
+    rasterCycle: number,
+    rasterLine: number,
+    rowSelect: boolean,
+  ): void {
+    const leftCycle = columnSelect
       ? this.timing.border.standardColumnLeftCycle
       : this.timing.border.reducedColumnLeftCycle;
-    if (signals.rasterCycle === leftCycle) {
-      this.checkVerticalBorderBottom(signals);
+    if (rasterCycle === leftCycle) {
+      this.checkVerticalBorderBottom(rasterLine, rowSelect);
       this.verticalBorder = this.pendingVerticalBorder;
       if (!this.verticalBorder) this.mainBorder = false;
     }
 
-    const rightCycle = signals.columnSelect
+    const rightCycle = columnSelect
       ? this.timing.border.standardColumnRightCycle
       : this.timing.border.reducedColumnRightCycle;
-    if (signals.rasterCycle === rightCycle) this.mainBorder = true;
+    if (rasterCycle === rightCycle) this.mainBorder = true;
   }
 
-  private checkVerticalBorderTop(signals: VicBorderSignals): void {
-    const startLine = signals.rowSelect
+  private checkVerticalBorderTop(
+    displayEnabled: boolean,
+    rasterLine: number,
+    rowSelect: boolean,
+  ): void {
+    const startLine = rowSelect
       ? this.timing.border.standardRowStartLine
       : this.timing.border.reducedRowStartLine;
-    if (signals.rasterLine === startLine && signals.displayEnabled) {
+    if (rasterLine === startLine && displayEnabled) {
       this.verticalBorder = false;
       this.pendingVerticalBorder = false;
     }
   }
 
-  private checkVerticalBorderBottom(signals: VicBorderSignals): void {
-    const stopLine = signals.rowSelect
+  private checkVerticalBorderBottom(rasterLine: number, rowSelect: boolean): void {
+    const stopLine = rowSelect
       ? this.timing.border.standardRowStopLine
       : this.timing.border.reducedRowStopLine;
-    if (signals.rasterLine === stopLine) this.pendingVerticalBorder = true;
+    if (rasterLine === stopLine) this.pendingVerticalBorder = true;
   }
 
   private drawPixelMask(columnSelect: boolean): number {

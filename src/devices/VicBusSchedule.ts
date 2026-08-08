@@ -67,7 +67,7 @@ function defaultPhi1Fetch(cycle: number, timing: VicTiming): VicPhi1Fetch {
   throw new RangeError(`PAL VIC-II cycle ${cycle} has no Phi1 fetch assignment.`);
 }
 
-function createSchedule(timing: VicTiming): readonly VicBusScheduleEntry[] {
+export function createVicBusSchedule(timing: VicTiming): readonly VicBusScheduleEntry[] {
   const phi1 = Array<VicPhi1Fetch | undefined>(timing.cyclesPerRasterLine + 1);
   const phi2 = Array<VicPhi2Fetch | undefined>(timing.cyclesPerRasterLine + 1);
 
@@ -125,7 +125,7 @@ function createSchedule(timing: VicTiming): readonly VicBusScheduleEntry[] {
   );
 }
 
-const PAL_BUS_SCHEDULE = createSchedule(PAL_VIC_TIMING);
+const PAL_BUS_SCHEDULE = createVicBusSchedule(PAL_VIC_TIMING);
 
 export function vicBusScheduleForCycle(cycle: number): VicBusScheduleEntry {
   const normalizedCycle = Math.trunc(cycle);

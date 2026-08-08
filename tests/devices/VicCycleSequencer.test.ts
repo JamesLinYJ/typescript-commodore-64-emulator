@@ -15,7 +15,7 @@ import {
   type VicCycleResult,
   type VicCycleSignals,
 } from '../../src/devices/VicCycleSequencer';
-import { PAL_VIC_TIMING } from '../../src/devices/VicTiming';
+import { PAL_VIC_TIMING, type VicTiming } from '../../src/devices/VicTiming';
 
 class MutableVicSignals implements VicCycleSignals {
   displayEnabled = false;
@@ -68,6 +68,37 @@ describe('VicCycleSequencer', () => {
       frameStarted: true,
       lineStarted: true,
       rasterLine: 0,
+    });
+  });
+
+  it('indexes the schedule derived from a custom timing model through its line boundary', () => {
+    const sixtyFiveCycleTiming: VicTiming = {
+      ...PAL_VIC_TIMING,
+      cyclesPerRasterLine: 65,
+      fetch: {
+        ...PAL_VIC_TIMING.fetch,
+        refreshFirstCycle: 9,
+      },
+    };
+    const sequencer = new VicCycleSequencer(sixtyFiveCycleTiming);
+    const signals = new MutableVicSignals();
+    let result: VicCycleResult | undefined;
+
+    for (let elapsed = 0; elapsed < sixtyFiveCycleTiming.cyclesPerRasterLine; elapsed += 1) {
+      result = sequencer.tick(signals);
+    }
+
+    expect(result).toMatchObject({
+      busSchedule: { cycle: 65 },
+      completedRasterLine: 0,
+      cycle: 65,
+      rasterLine: 0,
+    });
+    expect(sequencer.tick(signals)).toMatchObject({
+      busSchedule: { cycle: 1 },
+      cycle: 1,
+      lineStarted: true,
+      rasterLine: 1,
     });
   });
 

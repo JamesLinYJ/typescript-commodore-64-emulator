@@ -8,6 +8,7 @@ const BRANCH_NOT_EQUAL_OPCODE = 0xd0;
 const SET_INTERRUPT_DISABLE_OPCODE = 0x78;
 const NO_OPERATION_OPCODE = 0xea;
 const BREAK_OPCODE = 0x00;
+const PUSH_ACCUMULATOR_OPCODE = 0x48;
 
 function completeInstruction(
   timing: CpuInterruptTiming,
@@ -92,5 +93,22 @@ describe('CpuInterruptTiming', () => {
 
     completeInstruction(timing, BREAK_OPCODE, false, true);
     expect(timing.canAcceptNonMaskableInterrupt(10)).toBe(false);
+  });
+
+  it('defers a late NMI through the first handler instruction after a virtual BRK entry', () => {
+    const timing = new CpuInterruptTiming();
+    timing.completeInterruptEntry();
+
+    expect(timing.canAcceptNonMaskableInterrupt(10)).toBe(false);
+
+    completeInstruction(timing, PUSH_ACCUMULATOR_OPCODE, true);
+    expect(timing.canAcceptNonMaskableInterrupt(10)).toBe(true);
+  });
+
+  it('does not treat the I flag set internally by BRK as the SEI sampling exception', () => {
+    const timing = new CpuInterruptTiming();
+    completeInstruction(timing, BREAK_OPCODE, false, true);
+
+    expect(timing.canAcceptMaskableInterrupt(10, true)).toBe(false);
   });
 });

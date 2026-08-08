@@ -59,10 +59,22 @@ export function c64CartridgeModeForLines(
 }
 
 export function c64PlaConfigurationCode(inputs: C64PlaInputs): number {
+  return c64PlaConfigurationCodeForSignals(
+    inputs.gameLineHigh,
+    inputs.exromLineHigh,
+    inputs.processorPort,
+  );
+}
+
+export function c64PlaConfigurationCodeForSignals(
+  gameLineHigh: boolean,
+  exromLineHigh: boolean,
+  processorPort: number,
+): number {
   return (
-    (inputs.gameLineHigh ? 0 : CARTRIDGE_GAME_CONFIGURATION_BIT) |
-    (inputs.exromLineHigh ? 0 : CARTRIDGE_EXROM_CONFIGURATION_BIT) |
-    (inputs.processorPort & PROCESSOR_PORT_BANK_MASK)
+    (gameLineHigh ? 0 : CARTRIDGE_GAME_CONFIGURATION_BIT) |
+    (exromLineHigh ? 0 : CARTRIDGE_EXROM_CONFIGURATION_BIT) |
+    (processorPort & PROCESSOR_PORT_BANK_MASK)
   );
 }
 

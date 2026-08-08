@@ -16,6 +16,7 @@ import { VicII } from '../../src/devices/VicII';
 import type { VicMemoryBus } from '../../src/devices/VicMemoryBus';
 import { VicPixelPipeline, type VicPixelRegisters } from '../../src/devices/VicPixelPipeline';
 import type { VicSprite } from '../../src/devices/VicSprite';
+import { PAL_VIC_TIMING } from '../../src/devices/VicTiming';
 import {
   VIC_INTERRUPT_BIT,
   VIC_REGISTER,
@@ -89,6 +90,56 @@ describe('VicPixelPipeline', () => {
         },
       }),
     ).not.toThrow();
+  });
+
+  it('writes each fully covered cycle with the border color sampled for that cycle', () => {
+    const signals = {
+      displayEnabled: true,
+      spriteEnableMask: 0,
+      spriteVerticalExpansionMask: 0,
+      spriteY: () => 0,
+      verticalScroll: 0,
+    };
+    const sequencer = new VicCycleSequencer();
+    const fetch = new VicFetchPipeline();
+    const pipeline = new VicPixelPipeline(PAL_VIC_TIMING, {
+      firstVisibleCycle: 1,
+      outputWidth: 16,
+    });
+    const black = 0xff000000;
+    const red = 0xffe04040;
+    const registers: VicPixelRegisters = {
+      backgroundColors: [black, black, black, black],
+      bitmapMode: false,
+      borderColor: black,
+      displayModeValid: true,
+      extendedBackgroundMode: false,
+      horizontalScroll: 0,
+      multicolorMode: false,
+      palette: [black],
+      screenVisible: true,
+      spriteMulticolor0: black,
+      spriteMulticolor1: black,
+      sprites: [],
+    };
+    const collisions = {
+      recordSpriteForegroundCollision: () => undefined,
+      recordSpriteSpriteCollision: () => undefined,
+    };
+
+    pipeline.clockCycle(sequencer.tick(signals), 0xff, registers, fetch, collisions);
+    pipeline.clockCycle(
+      sequencer.tick(signals),
+      0xff,
+      { ...registers, borderColor: red },
+      fetch,
+      collisions,
+    );
+
+    expect(Array.from(pipeline.snapshot())).toEqual([
+      ...Array<number>(8).fill(black),
+      ...Array<number>(8).fill(red),
+    ]);
   });
 
   it('renders a fetched text bit at the two-cycle graphics pipeline position', () => {

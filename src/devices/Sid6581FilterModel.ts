@@ -219,9 +219,11 @@ export class Sid6581FilterModel {
     const gateDrain = supplyThreshold - inputVoltage;
     const gateDrainSquared = Math.imul(gateDrain, gateDrain) >>> 0;
     const snakeDifference = (Math.imul(gateSource, gateSource) - gateDrainSquared) | 0;
-    const snakeCurrent = this.normalizedSnakeCurrent * arithmeticShiftRight(snakeDifference, 15);
+    // 平方差与电容电压已分别锁存为无符号/有符号 32 位整数；它们可直接
+    // 用移位保留算术右移语义。公开的 cutoff 参数仍用 Math.floor 保留越界检查。
+    const snakeCurrent = this.normalizedSnakeCurrent * (snakeDifference >> 15);
     const gateLookupIndex = Math.floor(
-      (cutoffVoltageSquared + Math.floor(gateDrainSquared / 2)) / NORMALIZED_VOLTAGE_LEVEL_COUNT,
+      (cutoffVoltageSquared + (gateDrainSquared >>> 1)) / NORMALIZED_VOLTAGE_LEVEL_COUNT,
     );
     const gateVoltage = lookupTable(
       this.vcrGateVoltage,
@@ -244,14 +246,13 @@ export class Sid6581FilterModel {
 
     state.capacitorVoltage = (state.capacitorVoltage - snakeCurrent - vcrCurrent) | 0;
     const reverseIndex =
-      arithmeticShiftRight(state.capacitorVoltage, NORMALIZED_CAPACITOR_FRACTION_BITS) +
-      NORMALIZED_VOLTAGE_MIDPOINT;
+      (state.capacitorVoltage >> NORMALIZED_CAPACITOR_FRACTION_BITS) + NORMALIZED_VOLTAGE_MIDPOINT;
     state.opAmpInput = lookupTable(
       this.opAmpReverse,
       reverseIndex,
       'MOS 6581 reverse op-amp transfer',
     );
-    return state.opAmpInput + arithmeticShiftRight(state.capacitorVoltage, 14);
+    return state.opAmpInput + (state.capacitorVoltage >> 14);
   }
 
   private lookupGain(index: number): number {

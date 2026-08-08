@@ -32,17 +32,20 @@ export class C64Machine {
   private readonly cpuBusCycleObserver: CpuBusCycleObserver = {
     completeCpuBusCycle: () => this.synchronizeInterruptInputs(),
     startCpuBusCycle: (kind, address) => {
-      this.advanceCpuBusCycle(kind);
+      this.advanceCpuBusCycle(kind, address);
       this.observedBusCycles += 1;
       this.assertCpuBusOwnership(kind, address);
     },
   };
+  private readonly cpuNmiTakeoverProbe = () => this.acknowledgeNmiTakeover();
 
   constructor(
     readonly cpu: Cpu6502,
     readonly memory: C64Memory,
     private readonly clockedPeripherals: readonly C64ClockedPeripheral[] = [],
-  ) {}
+  ) {
+    this.cpu.setNmiTakeoverProbe(this.cpuNmiTakeoverProbe);
+  }
 
   get elapsedCycles(): number {
     return this.cycleCount;
@@ -92,17 +95,7 @@ export class C64Machine {
     if (elapsed === 0) return;
 
     for (let cycle = 0; cycle < elapsed; cycle += 1) {
-      this.cycleCount += 1;
-      this.memory.processorPort.tick(1);
-      this.memory.restoreKey.tick(1);
-      this.memory.datasette.tick(1);
-      this.memory.cartridge.tick(1);
-      this.memory.cia1.tick(1);
-      this.memory.cia2.tick(1);
-      this.memory.vic.tickCycle(this.memory);
-      this.memory.sid.tick(1);
-      for (const peripheral of this.clockedPeripherals) peripheral.advanceHostCycles(1);
-      this.synchronizeInterruptInputs();
+      this.advanceHardwareCycle();
     }
   }
 
@@ -152,17 +145,49 @@ export class C64Machine {
     this.irqLine.update(asserted, this.cycleCount);
   }
 
+  private acknowledgeNmiTakeover(): boolean {
+    this.synchronizeInterruptInputs();
+    const vectorSelectionClock = this.cycleCount + CPU_BOUNDARY_CLOCK_OFFSET;
+    if (
+      !this.nmiLine.isPending ||
+      !this.cpu.canTakeOverInterruptSequenceWithNmi(
+        this.nmiLine.elapsedCycles(vectorSelectionClock),
+      )
+    ) {
+      return false;
+    }
+    this.nmiLine.acknowledge();
+    return true;
+  }
+
   private completeCpuOperation(totalCycles: number): void {
     if (this.observedBusCycles !== totalCycles) {
       throw new CpuBusCycleInvariantError(totalCycles, this.observedBusCycles);
     }
   }
 
-  private advanceCpuBusCycle(kind: CpuBusAccessKind): void {
+  private advanceCpuBusCycle(kind: CpuBusAccessKind, address: number): void {
     // BA 在当前 φ2 周期决定 6510 的读访问是否完成，所以必须先推进到被尝试的周期再采样。
     // 读周期会保持地址并重复到 BA 释放；写周期不响应 RDY，可在 AEC 拉低前的三周期预告窗内完成。
-    do this.advanceHardware(1);
+    do this.advanceHardwareCycle(kind === 'read' ? address : undefined);
     while (kind === 'read' && this.memory.vic.baLow);
+  }
+
+  private advanceHardwareCycle(cpuReadAddress?: number): void {
+    this.cycleCount += 1;
+    this.memory.processorPort.tick(1);
+    this.memory.restoreKey.tick(1);
+    this.memory.datasette.tick(1);
+    this.memory.cartridge.tick(1);
+    this.memory.cia1.clockCycle();
+    this.memory.cia2.clockCycle();
+    // CPU 读地址在 φ2 内保持不变；被动 RAM/ROM 在 VIC 执行 C-access 前驱动
+    // 数据总线。这个相位不会提前触发 CIA/VIC/SID 的读副作用。
+    if (cpuReadAddress !== undefined) this.memory.driveCpuReadDataBus(cpuReadAddress);
+    this.memory.vic.clockCycle(this.memory);
+    this.memory.sid.tick(1);
+    for (const peripheral of this.clockedPeripherals) peripheral.advanceHostCycles(1);
+    this.synchronizeInterruptInputs();
   }
 
   private assertCpuBusOwnership(kind: CpuBusAccessKind, address: number): void {

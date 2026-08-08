@@ -28,6 +28,49 @@ function writeTimerB(cia: Mos6526, value: number): void {
   cia.write(CIA_REGISTER.timerBHigh, value >> 8);
 }
 
+class ObservedMos6526 extends Mos6526 {
+  portBTransitions: number[] | undefined;
+  serialTransitions: [clockHigh: boolean, dataHigh: boolean][] | undefined;
+
+  constructor(name: string, model: (typeof MOS_6526_MODEL)[keyof typeof MOS_6526_MODEL]) {
+    super(name, { model });
+    this.portBTransitions = [];
+    this.serialTransitions = [];
+  }
+
+  clearTransitions(): void {
+    this.portBTransitions?.splice(0);
+    this.serialTransitions?.splice(0);
+  }
+
+  protected override onPortBOutputChanged(pins: number): void {
+    this.portBTransitions?.push(pins);
+  }
+
+  protected override onSerialOutputChanged(clockHigh: boolean, dataHigh: boolean): void {
+    this.serialTransitions?.push([clockHigh, dataHigh]);
+  }
+}
+
+function configureObservedOutputs(cia: ObservedMos6526): void {
+  cia.write(CIA_REGISTER.portB, 0xff);
+  cia.write(CIA_REGISTER.dataDirectionB, 0xff);
+  writeTimerA(cia, 1);
+  cia.write(CIA_REGISTER.serialData, 0xa5);
+  cia.write(
+    CIA_REGISTER.interruptControl,
+    CIA_INTERRUPT_BIT.setOrPending | CIA_INTERRUPT_BIT.timerA | CIA_INTERRUPT_BIT.serial,
+  );
+  cia.write(
+    CIA_REGISTER.timerAControl,
+    CIA_TIMER_CONTROL_BIT.start |
+      CIA_TIMER_CONTROL_BIT.portBOutput |
+      CIA_TIMER_CONTROL_BIT.forceLoad |
+      CIA_TIMER_CONTROL_BIT.serialOutputMode,
+  );
+  cia.clearTransitions();
+}
+
 describe('Mos6526', () => {
   it('combines output latches and data-direction registers at the port pins', () => {
     const cia = new Mos6526();
@@ -185,6 +228,62 @@ describe('Mos6526', () => {
     expect(cia.read(CIA_REGISTER.timeOfDayMinutes)).toBe(0x00);
     expect(cia.read(CIA_REGISTER.timeOfDaySeconds)).toBe(0x00);
     expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x00);
+  });
+
+  it('keeps timer, interrupt, and TOD phase identical through the single-cycle fast path', () => {
+    const timing = { processorClockHz: 10, timeOfDayInputHz: 2 } as const;
+    const batched = new Mos6526('batched', { timing });
+    const singleCycle = new Mos6526('single-cycle', { timing });
+
+    for (const cia of [batched, singleCycle]) {
+      writeTimerA(cia, 3);
+      cia.write(
+        CIA_REGISTER.interruptControl,
+        CIA_INTERRUPT_BIT.setOrPending | CIA_INTERRUPT_BIT.timerA,
+      );
+      cia.write(
+        CIA_REGISTER.timerAControl,
+        CIA_TIMER_CONTROL_BIT.start | CIA_TIMER_CONTROL_BIT.forceLoad,
+      );
+    }
+
+    const batchedInterrupt = batched.tick(30);
+    let singleCycleInterrupt = false;
+    for (let cycle = 0; cycle < 30; cycle += 1) {
+      singleCycleInterrupt = singleCycle.clockCycle();
+    }
+
+    expect(singleCycleInterrupt).toBe(batchedInterrupt);
+    expect(singleCycle.read(CIA_REGISTER.timerALow)).toBe(batched.read(CIA_REGISTER.timerALow));
+    expect(singleCycle.read(CIA_REGISTER.timeOfDayTenths)).toBe(
+      batched.read(CIA_REGISTER.timeOfDayTenths),
+    );
+    expect(singleCycle.read(CIA_REGISTER.interruptControl)).toBe(
+      batched.read(CIA_REGISTER.interruptControl),
+    );
+  });
+
+  it('keeps PB6 and serial pin transitions identical through the single-cycle fast path', () => {
+    for (const model of [MOS_6526_MODEL.original, MOS_6526_MODEL.revised]) {
+      const batched = new ObservedMos6526('batched outputs', model);
+      const singleCycle = new ObservedMos6526('single-cycle outputs', model);
+      configureObservedOutputs(batched);
+      configureObservedOutputs(singleCycle);
+
+      for (let cycle = 0; cycle < 48; cycle += 1) {
+        expect(singleCycle.clockCycle()).toBe(batched.tick(1));
+        expect(singleCycle.portBOutputPins).toBe(batched.portBOutputPins);
+        expect(singleCycle.serialClockOutputHigh).toBe(batched.serialClockOutputHigh);
+        expect(singleCycle.serialDataOutputHigh).toBe(batched.serialDataOutputHigh);
+        expect(singleCycle.read(CIA_REGISTER.timerALow)).toBe(batched.read(CIA_REGISTER.timerALow));
+      }
+
+      expect(singleCycle.portBTransitions).toEqual(batched.portBTransitions);
+      expect(singleCycle.serialTransitions).toEqual(batched.serialTransitions);
+      expect(singleCycle.read(CIA_REGISTER.interruptControl)).toBe(
+        batched.read(CIA_REGISTER.interruptControl),
+      );
+    }
   });
 
   it('preserves invalid BCD bit patterns written to TOD registers', () => {

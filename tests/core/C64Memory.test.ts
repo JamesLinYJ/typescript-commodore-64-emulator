@@ -51,7 +51,7 @@ describe('C64Memory', () => {
 
     memory.vic.tickCycle(memory);
 
-    expect(memory.vic.read(VIC_REGISTER.lightPenX)).toBe(0xcc);
+    expect(memory.vic.read(VIC_REGISTER.lightPenX)).toBe(0xca);
     expect(memory.vic.read(VIC_REGISTER.interruptStatus) & VIC_INTERRUPT_BIT.lightPen).toBe(
       VIC_INTERRUPT_BIT.lightPen,
     );

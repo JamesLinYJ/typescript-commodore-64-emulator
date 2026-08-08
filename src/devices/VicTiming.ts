@@ -39,6 +39,7 @@ export interface VicTiming {
     readonly videoCounterReloadCycle: number;
   };
   readonly lightPen: {
+    readonly horizontalCounterGranularityPixels: number;
     readonly horizontalOriginPixels: number;
     readonly horizontalPositionModuloPixels: number;
     readonly mos6569R3RegisterOffset: number;
@@ -93,6 +94,7 @@ export const PAL_VIC_TIMING: VicTiming = {
     videoCounterReloadCycle: 14,
   },
   lightPen: {
+    horizontalCounterGranularityPixels: 8,
     // PAL 6569R3 的第一个 φ1 周期从光栅横坐标 $194 开始，计数在 504 像素处回卷。
     horizontalOriginPixels: 0x194,
     horizontalPositionModuloPixels: 504,

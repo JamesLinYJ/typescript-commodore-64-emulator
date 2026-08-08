@@ -544,8 +544,8 @@ export class Drive1541Mechanism {
 
   private diskHeadBlockedCycles(cpuCycles: number): number {
     if (!this.disk) return 0;
-    // VICE diskchange 参考协议使用固定区间表示人手插拔；插入完成前不让读写头提前看到
-    // 完整镜像，避免传感器仍在遮挡时软件已经能读取稳定同步标记的矛盾状态。
+    // 磁盘插入完成前不让读写头提前看到完整镜像，避免传感器仍在遮挡时
+    // 软件已经能读取稳定同步标记的矛盾状态。
     const remaining = Math.max(
       this.diskInsertionCyclesRemaining,
       this.diskReplacementGapCyclesRemaining,

@@ -14,6 +14,7 @@ import {
   C64Pla,
   C64_CARTRIDGE_MODE,
   C64_PLA_TARGET,
+  c64PlaConfigurationCodeForSignals,
   type C64PlaInputs,
   type C64PlaTarget,
 } from '../../src/core/memory/C64Pla';
@@ -82,7 +83,16 @@ describe('C64Pla', () => {
     expect(EXPECTED_READ_WINDOWS).toHaveLength(32);
 
     for (const [code, expected] of EXPECTED_READ_WINDOWS.entries()) {
-      const pla = new C64Pla(inputsForConfigurationCode(code));
+      const inputs = inputsForConfigurationCode(code);
+      const pla = new C64Pla(inputs);
+      expect(
+        c64PlaConfigurationCodeForSignals(
+          inputs.gameLineHigh,
+          inputs.exromLineHigh,
+          inputs.processorPort,
+        ),
+        `scalar configuration ${code}`,
+      ).toBe(code);
       expect(pla.configurationCode, `configuration ${code}`).toBe(code);
       expect(pla.readTarget(0x8000), `configuration ${code}, $8000`).toBe(expected.address8000);
       expect(pla.readTarget(0xa000), `configuration ${code}, $A000`).toBe(expected.addressA000);

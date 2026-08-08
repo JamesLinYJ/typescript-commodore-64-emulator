@@ -63,6 +63,13 @@ const RASTER_IRQ_PROGRAM: ReferenceAsset = {
   url: `${VICE_TEST_ROOT}/rasterirq/rasterirq_hold.prg?format=raw`,
 };
 
+const LIGHT_PEN_TIMING_PROGRAM: ReferenceAsset = {
+  cacheFileName: 'vic-light-pen-test2.prg',
+  fileName: 'test2.prg',
+  sha256: 'b8beff034421415f419ccf9ee640c3afbf4b5aa7d03746a95275e1401429634c',
+  url: `${VICE_TEST_ROOT}/lp-trigger/test2.prg?format=raw`,
+};
+
 const DMA_DELAY_PROGRAM: ReferenceAsset = {
   fileName: 'test3-28-07.prg',
   sha256: '28297d89f31b18a432006e156df380b8677b074d5650556932d6ace2285d1847',
@@ -377,9 +384,10 @@ function createPalFrameCapture(): PalFrameCapture {
 }
 
 async function main(): Promise<void> {
-  const [firmware, rasterIrqProgram, pixelReferences] = await Promise.all([
+  const [firmware, rasterIrqProgram, lightPenTimingProgram, pixelReferences] = await Promise.all([
     loadFirmware(),
     loadReferenceAsset(RASTER_IRQ_PROGRAM),
+    loadReferenceAsset(LIGHT_PEN_TIMING_PROGRAM),
     Promise.all(
       PIXEL_REFERENCE_DEFINITIONS.map(async (definition) => ({
         definition,
@@ -395,6 +403,15 @@ async function main(): Promise<void> {
   });
   console.log(
     `PASS VICE ${RASTER_IRQ_PROGRAM.fileName} (PAL raster IRQ): ${rasterIrq.frames} frames, ${rasterIrq.totalCycles.toLocaleString('en-US')} total cycles.`,
+  );
+
+  const lightPenTiming = runReferenceProgram(firmware, lightPenTimingProgram, {
+    entryPoint: 0x080d,
+    label: 'VICE lp-trigger/test2.prg',
+  });
+  console.log(
+    `PASS VICE ${LIGHT_PEN_TIMING_PROGRAM.fileName} (MOS 6569 light-pen timing): ` +
+      `${lightPenTiming.frames} frames, ${lightPenTiming.totalCycles.toLocaleString('en-US')} total cycles.`,
   );
 
   for (const { definition, program, referenceImage } of pixelReferences) {

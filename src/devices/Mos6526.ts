@@ -88,6 +88,7 @@ export class Mos6526 extends IoDevice {
   private portControlPulseCyclesRemaining = 0;
   readonly model: Mos6526Model;
   private readonly timing: Mos6526Timing;
+  private readonly processorCyclesPerTimeOfDayInputPulse: number;
 
   constructor(deviceName = 'MOS 6526', options: Mos6526Options = {}) {
     super(deviceName, CIA_REGISTER_COUNT, options.debug ?? false);
@@ -96,6 +97,8 @@ export class Mos6526 extends IoDevice {
     if (this.timing.processorClockHz <= 0 || this.timing.timeOfDayInputHz <= 0) {
       throw new RangeError('MOS 6526 clock frequencies must be positive.');
     }
+    this.processorCyclesPerTimeOfDayInputPulse =
+      this.timing.processorClockHz / this.timing.timeOfDayInputHz;
     this.installRegisterMap();
     this.reset();
   }
@@ -185,43 +188,37 @@ export class Mos6526 extends IoDevice {
     const elapsedCycles = Math.max(0, Math.trunc(cycles));
     if (elapsedCycles === 0) return this.interruptPending;
 
-    const portBOutputBefore = this.portBOutputPins;
+    const timerOutputRoutedToPortB = this.timerOutputRoutedToPortB;
+    const portBOutputBefore = timerOutputRoutedToPortB ? this.portBOutputPins : 0;
     for (let cycle = 0; cycle < elapsedCycles; cycle += 1) {
-      this.elapsedCycleCount += 1;
-      this.tickPortControlOutput();
-      const serialClockBefore = this.serialClockOutputHigh;
-      const serialDataBefore = this.serialDataOutputHigh;
-      if (this.serialPort.tickCycle()) this.raiseInterrupt(CIA_INTERRUPT_BIT.serial);
-      const timerAUnderflow = this.timerA.tickCycle();
-      if (timerAUnderflow) {
-        this.raiseInterrupt(CIA_INTERRUPT_BIT.timerA);
-        this.clockSerialOutput();
-      }
-      const cascadeTimerB =
-        this.timerB.inputMode === CIA_TIMER_B_INPUT_MODE.timerAUnderflow ||
-        (this.timerB.inputMode === CIA_TIMER_B_INPUT_MODE.timerAUnderflowWhileCountHigh &&
-          this.countPinHigh);
-      if (this.timerB.tickCycle(cascadeTimerB && timerAUnderflow)) {
-        this.timerBReadCollision =
-          this.model === MOS_6526_MODEL.original &&
-          this.lastInterruptControlReadCycle === this.elapsedCycleCount - 1;
-        this.raiseInterrupt(CIA_INTERRUPT_BIT.timerB);
-      } else {
-        this.timerBReadCollision = false;
-      }
-      this.runInterruptPipelineCycle();
-      if (
-        serialClockBefore !== this.serialClockOutputHigh ||
-        serialDataBefore !== this.serialDataOutputHigh
-      ) {
-        this.onSerialOutputChanged(this.serialClockOutputHigh, this.serialDataOutputHigh);
-      }
+      this.runProcessorClockCycle();
     }
     this.synchronizeTimerStartBits();
-    if (this.portBOutputPins !== portBOutputBefore) {
-      this.onPortBOutputChanged(this.portBOutputPins);
+    if (timerOutputRoutedToPortB) {
+      const portBOutputAfter = this.portBOutputPins;
+      if (portBOutputAfter !== portBOutputBefore) {
+        this.onPortBOutputChanged(portBOutputAfter);
+      }
     }
     this.tickTimeOfDayFromProcessorCycles(elapsedCycles);
+    return this.interruptPending;
+  }
+
+  /** 推进单个处理器时钟，避免整机热路径重复执行批量参数规范化与循环。 */
+  clockCycle(): boolean {
+    // 只有 CRA/CRB 把定时器输出路由到 PB6/PB7 时，芯片时钟才可能改变
+    // Port B 引脚。普通键盘/IEC 周期直接跳过两次引脚合成与比较。
+    const timerOutputRoutedToPortB = this.timerOutputRoutedToPortB;
+    const portBOutputBefore = timerOutputRoutedToPortB ? this.portBOutputPins : 0;
+    this.runProcessorClockCycle();
+    this.synchronizeTimerStartBits();
+    if (timerOutputRoutedToPortB) {
+      const portBOutputAfter = this.portBOutputPins;
+      if (portBOutputAfter !== portBOutputBefore) {
+        this.onPortBOutputChanged(portBOutputAfter);
+      }
+    }
+    this.tickTimeOfDayFromProcessorCycles(1);
     return this.interruptPending;
   }
 
@@ -229,7 +226,8 @@ export class Mos6526 extends IoDevice {
     const pulses = Math.max(0, Math.trunc(count));
     if (pulses === 0) return this.interruptPending;
 
-    const portBOutputBefore = this.portBOutputPins;
+    const timerOutputRoutedToPortB = this.timerOutputRoutedToPortB;
+    const portBOutputBefore = timerOutputRoutedToPortB ? this.portBOutputPins : 0;
     for (let pulse = 0; pulse < pulses; pulse += 1) {
       if (this.serialPort.tickCycle()) this.raiseInterrupt(CIA_INTERRUPT_BIT.serial);
       const timerAUnderflow =
@@ -250,8 +248,11 @@ export class Mos6526 extends IoDevice {
       this.runInterruptPipelineCycle();
     }
     this.synchronizeTimerStartBits();
-    if (this.portBOutputPins !== portBOutputBefore) {
-      this.onPortBOutputChanged(this.portBOutputPins);
+    if (timerOutputRoutedToPortB) {
+      const portBOutputAfter = this.portBOutputPins;
+      if (portBOutputAfter !== portBOutputBefore) {
+        this.onPortBOutputChanged(portBOutputAfter);
+      }
     }
     return this.interruptPending;
   }
@@ -417,6 +418,15 @@ export class Mos6526 extends IoDevice {
     return byte(high ? value | mask : value & ~mask);
   }
 
+  private get timerOutputRoutedToPortB(): boolean {
+    return (
+      (((this.registers[CIA_REGISTER.timerAControl] ?? 0) |
+        (this.registers[CIA_REGISTER.timerBControl] ?? 0)) &
+        CIA_TIMER_CONTROL_BIT.portBOutput) !==
+      0
+    );
+  }
+
   private mapTimerRegisters(timer: Mos6526Timer, lowRegister: number, highRegister: number): void {
     this.mapRegister(lowRegister, {
       read: () => byte(timer.counter),
@@ -446,20 +456,17 @@ export class Mos6526 extends IoDevice {
   }
 
   private synchronizeTimerStartBits(): void {
-    this.registers[CIA_REGISTER.timerAControl] = this.setTimerStartBit(
-      this.registers[CIA_REGISTER.timerAControl] ?? 0,
-      this.timerA.running,
-    );
-    this.registers[CIA_REGISTER.timerBControl] = this.setTimerStartBit(
-      this.registers[CIA_REGISTER.timerBControl] ?? 0,
-      this.timerB.running,
-    );
+    this.synchronizeTimerStartBit(CIA_REGISTER.timerAControl, this.timerA.running);
+    this.synchronizeTimerStartBit(CIA_REGISTER.timerBControl, this.timerB.running);
   }
 
-  private setTimerStartBit(control: number, running: boolean): number {
-    return byte(
-      running ? control | CIA_TIMER_CONTROL_BIT.start : control & ~CIA_TIMER_CONTROL_BIT.start,
-    );
+  private synchronizeTimerStartBit(register: number, running: boolean): void {
+    const control = this.registers[register] ?? 0;
+    const startBitSet = (control & CIA_TIMER_CONTROL_BIT.start) !== 0;
+    if (startBitSet === running) return;
+    this.registers[register] = running
+      ? control | CIA_TIMER_CONTROL_BIT.start
+      : control & ~CIA_TIMER_CONTROL_BIT.start;
   }
 
   private writeSerialData(index: number, value: number): void {
@@ -539,6 +546,8 @@ export class Mos6526 extends IoDevice {
   }
 
   private runInterruptPipelineCycle(): void {
+    if (this.interruptPipeline === 0 && this.newInterruptFlags === 0) return;
+
     let pipeline = this.interruptPipeline;
 
     if ((pipeline & INTERRUPT_PIPELINE.acknowledgeStage0) !== 0) {
@@ -569,11 +578,49 @@ export class Mos6526 extends IoDevice {
     this.interruptPipeline = (pipeline << 1) & ~INTERRUPT_PIPELINE_EXPIRED_MASK;
   }
 
+  private runProcessorClockCycle(): void {
+    this.elapsedCycleCount += 1;
+    this.tickPortControlOutput();
+    const serialWorkPending = this.serialPort.cycleWorkPending;
+    const serialClockBefore = serialWorkPending ? this.serialClockOutputHigh : true;
+    const serialDataBefore = serialWorkPending ? this.serialDataOutputHigh : true;
+    if (serialWorkPending && this.serialPort.tickCycle()) {
+      this.raiseInterrupt(CIA_INTERRUPT_BIT.serial);
+    }
+    const timerAUnderflow = this.timerA.tickCycle();
+    if (timerAUnderflow) {
+      this.raiseInterrupt(CIA_INTERRUPT_BIT.timerA);
+      this.clockSerialOutput();
+    }
+    const cascadeTimerB =
+      this.timerB.inputMode === CIA_TIMER_B_INPUT_MODE.timerAUnderflow ||
+      (this.timerB.inputMode === CIA_TIMER_B_INPUT_MODE.timerAUnderflowWhileCountHigh &&
+        this.countPinHigh);
+    if (this.timerB.tickCycle(cascadeTimerB && timerAUnderflow)) {
+      this.timerBReadCollision =
+        this.model === MOS_6526_MODEL.original &&
+        this.lastInterruptControlReadCycle === this.elapsedCycleCount - 1;
+      this.raiseInterrupt(CIA_INTERRUPT_BIT.timerB);
+    } else {
+      this.timerBReadCollision = false;
+    }
+    this.runInterruptPipelineCycle();
+    if (
+      serialWorkPending &&
+      (serialClockBefore !== this.serialClockOutputHigh ||
+        serialDataBefore !== this.serialDataOutputHigh)
+    ) {
+      this.onSerialOutputChanged(this.serialClockOutputHigh, this.serialDataOutputHigh);
+    }
+  }
+
   private tickTimeOfDayFromProcessorCycles(cycles: number): void {
-    const cyclesPerInputPulse = this.timing.processorClockHz / this.timing.timeOfDayInputHz;
     this.timeOfDayCycleAccumulator += cycles;
+    const cyclesPerInputPulse = this.processorCyclesPerTimeOfDayInputPulse;
+    // TOD 输入只有 50/60 Hz；绝大多数 CPU 周期尚未到下一个边沿。用事件截止
+    // 先跳过除法，只在跨过边沿时计算累积脉冲数；相位累加方式保持不变。
+    if (this.timeOfDayCycleAccumulator < cyclesPerInputPulse) return;
     const pulses = Math.floor(this.timeOfDayCycleAccumulator / cyclesPerInputPulse);
-    if (pulses <= 0) return;
     this.timeOfDayCycleAccumulator -= pulses * cyclesPerInputPulse;
     this.tickTimeOfDayInput(pulses);
   }

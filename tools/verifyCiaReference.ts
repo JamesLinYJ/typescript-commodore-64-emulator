@@ -28,6 +28,7 @@ const USE_SERIAL_ICR2_REFERENCE = process.argv.includes('--serial-icr2');
 const USE_SDR_INIT_REFERENCE = process.argv.includes('--sdr-init');
 const USE_SDR_DELAY_REFERENCE = process.argv.includes('--sdr-delay');
 const USE_SDR_LOAD_REFERENCE = process.argv.includes('--sdr-load');
+const USE_IRQ_NMI_REFERENCE = process.argv.includes('--irqnmi');
 
 interface CiaReference {
   readonly description: string;
@@ -38,6 +39,31 @@ interface CiaReference {
 }
 
 function selectReference(): CiaReference {
+  if (USE_IRQ_NMI_REFERENCE) {
+    if (!USE_NEW_CIA_REFERENCE) {
+      throw new Error('The irqnmi-new reference requires --new-cia.');
+    }
+    if (
+      USE_NMI_REFERENCE ||
+      USE_SERIAL_REFERENCE ||
+      USE_SERIAL_ONE_SHOT_REFERENCE ||
+      USE_SERIAL_ICR_REFERENCE ||
+      USE_SERIAL_ICR2_REFERENCE ||
+      USE_SDR_INIT_REFERENCE ||
+      USE_SDR_DELAY_REFERENCE ||
+      USE_SDR_LOAD_REFERENCE
+    ) {
+      throw new Error('The IRQ/NMI collision reference cannot be combined with another mode.');
+    }
+    return {
+      description: 'IRQ/NMI collision timing',
+      directory: 'interrupts/irqnmi',
+      entryAddress: 0x080d,
+      file: 'irqnmi-new.prg',
+      sha256: '456385627b9a8bca0c82354fb41e0ca9b697c7a306614b0321b2c1035a1b1e84',
+    };
+  }
+
   const sdrReferences = [
     USE_SDR_INIT_REFERENCE
       ? {
@@ -178,12 +204,40 @@ const BOOT_FRAME_COUNT = 200;
 const TEST_FRAME_LIMIT = 1_000;
 const TRACE_CAPACITY = 24;
 const RESULT_ROWS = [3, 4, 7, 8, 11, 12, 15, 16, 19, 20] as const;
+const IRQ_NMI_SCREEN_ADDRESS = 0x0400;
+const IRQ_NMI_REFERENCE_ADDRESS = 0x0ab4;
+const IRQ_NMI_RESULT_SIZE = 0x0300;
+const IRQ_NMI_RESULT_ROW_WIDTH = 40;
+const IRQ_NMI_NMI_COLUMN_OFFSET = 20;
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
 function formatCiaResults(memory: C64Memory): string {
+  if (USE_IRQ_NMI_REFERENCE) {
+    const actual = memory.copyRam(IRQ_NMI_SCREEN_ADDRESS, IRQ_NMI_RESULT_SIZE);
+    const expected = memory.copyRam(IRQ_NMI_REFERENCE_ADDRESS, IRQ_NMI_RESULT_SIZE);
+    const differences: string[] = [];
+    for (let offset = 0; offset < IRQ_NMI_RESULT_SIZE; offset += 1) {
+      const actualValue = actual[offset] ?? 0;
+      const expectedValue = expected[offset] ?? 0;
+      if (actualValue === expectedValue) continue;
+      const row = Math.floor(offset / IRQ_NMI_RESULT_ROW_WIDTH);
+      const column = offset % IRQ_NMI_RESULT_ROW_WIDTH;
+      const source =
+        column >= IRQ_NMI_NMI_COLUMN_OFFSET
+          ? `NMI y=${column - IRQ_NMI_NMI_COLUMN_OFFSET}`
+          : `IRQ y=${column}`;
+      differences.push(
+        `x=${row} ${source}:$${actualValue.toString(16).padStart(2, '0')}!=` +
+          `$${expectedValue.toString(16).padStart(2, '0')}`,
+      );
+      if (differences.length >= TRACE_CAPACITY) break;
+    }
+    return `first IRQ/NMI matrix differences: ${differences.join(' ') || 'none'}`;
+  }
+
   if (USE_SDR_DELAY_REFERENCE) {
     const bytes = memory.copyRam(0x2000, 21 * 2);
     const values = Array.from({ length: 21 }, (_unused, index) => {
