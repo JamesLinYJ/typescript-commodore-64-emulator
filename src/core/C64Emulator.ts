@@ -18,6 +18,7 @@ import {
   PRG_START_MODE,
   type InstallPrgOptions,
   type LoadedProgram,
+  type PrgStartMode,
 } from '../media/PrgLoader';
 import { parseTapImage, type TapImage, type TapImageParserOptions } from '../media/TapImageParser';
 import { WritableTapImage, type WritableTapImageOptions } from '../media/WritableTapImage';
@@ -193,7 +194,7 @@ export class C64Emulator extends TypedEventEmitter<EmulatorEvents> {
     this.audioOutput.clear();
     this.renderer.resetTiming();
     this.memory.resetHardware();
-    this.cpu.reset();
+    this.renderer.resetCpu();
   }
 
   stepInstruction(): number {
@@ -235,36 +236,31 @@ export class C64Emulator extends TypedEventEmitter<EmulatorEvents> {
     options: C64RemoteProgramLoadOptions = {},
   ): Promise<LoadedProgram> {
     const bytes = await fetchBinary(url, this.fetcher, options.signal);
-    return this.loadProgramBytes(bytes, options);
+    return this.loadProgramBytesAsync(bytes, options, options.signal);
   }
 
   loadProgramBytes(
     input: ArrayBuffer | Uint8Array,
     options: C64ProgramLoadOptions = {},
   ): LoadedProgram {
-    const startMode = options.startMode ?? PRG_START_MODE.basicRun;
-    const resetMachine = options.resetMachine ?? startMode !== PRG_START_MODE.none;
-    const resumeAfterLoad = this.renderer.isRunning;
+    const context = this.prepareProgramLoad(options);
+    if (context.resetMachine) this.bootToBasicReady();
+    return this.installProgram(input, options, context);
+  }
 
-    if (resetMachine) {
-      this.renderer.pause();
-      this.reset();
-      this.bootToBasicReady();
-    } else if (startMode === PRG_START_MODE.basicRun && !this.basicReady) {
-      throw new Error('C64 BASIC must be ready before a PRG can be started with RUN.');
-    }
+  async loadProgramBytesAsync(
+    input: ArrayBuffer | Uint8Array,
+    options: C64ProgramLoadOptions = {},
+    signal?: AbortSignal,
+  ): Promise<LoadedProgram> {
+    const context = this.prepareProgramLoad(options);
 
     try {
-      const installOptions: InstallPrgOptions =
-        options.entryAddress === undefined
-          ? { startMode }
-          : { entryAddress: options.entryAddress, startMode };
-      const loaded = installPrg(parsePrg(input), this.memory, this.cpu, installOptions);
-      this.emit('programLoaded', loaded);
-      if (resumeAfterLoad) this.renderer.start();
-      return loaded;
+      if (context.resetMachine) await this.bootToBasicReadyAsync(signal);
+      signal?.throwIfAborted();
+      return this.installProgram(input, options, context);
     } catch (error: unknown) {
-      // 装载失败后保留暂停状态，避免从已复位但未完整安装的机器继续随机执行。
+      // 取消或装载失败后保留暂停状态，避免从已复位但未完整安装的机器继续执行。
       this.renderer.pause();
       throw error;
     }
@@ -373,5 +369,64 @@ export class C64Emulator extends TypedEventEmitter<EmulatorEvents> {
     throw new Error(
       `C64 BASIC did not reach READY within ${PRG_AUTOSTART_BOOT_FRAME_LIMIT} PAL frames.`,
     );
+  }
+
+  private async bootToBasicReadyAsync(signal?: AbortSignal): Promise<void> {
+    let readyWasAbsent = !this.basicReady;
+    for (let frame = 0; frame < PRG_AUTOSTART_BOOT_FRAME_LIMIT; frame += 1) {
+      signal?.throwIfAborted();
+      this.renderer.stepFrame();
+      const ready = this.basicReady;
+      if (!ready) readyWasAbsent = true;
+      else if (readyWasAbsent) return;
+
+      // 每个完整 PAL 帧后归还宿主事件循环；VIC 仍决定帧边界，硬件周期没有被跳过。
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    throw new Error(
+      `C64 BASIC did not reach READY within ${PRG_AUTOSTART_BOOT_FRAME_LIMIT} PAL frames.`,
+    );
+  }
+
+  private prepareProgramLoad(options: C64ProgramLoadOptions): {
+    readonly resetMachine: boolean;
+    readonly resumeAfterLoad: boolean;
+    readonly startMode: PrgStartMode;
+  } {
+    const startMode = options.startMode ?? PRG_START_MODE.basicRun;
+    const resetMachine = options.resetMachine ?? startMode !== PRG_START_MODE.none;
+    const resumeAfterLoad = this.renderer.isRunning;
+
+    if (resetMachine) {
+      this.renderer.pause();
+      this.reset();
+    } else if (startMode === PRG_START_MODE.basicRun && !this.basicReady) {
+      throw new Error('C64 BASIC must be ready before a PRG can be started with RUN.');
+    }
+    return { resetMachine, resumeAfterLoad, startMode };
+  }
+
+  private installProgram(
+    input: ArrayBuffer | Uint8Array,
+    options: C64ProgramLoadOptions,
+    context: {
+      readonly resumeAfterLoad: boolean;
+      readonly startMode: PrgStartMode;
+    },
+  ): LoadedProgram {
+    try {
+      const installOptions: InstallPrgOptions =
+        options.entryAddress === undefined
+          ? { startMode: context.startMode }
+          : { entryAddress: options.entryAddress, startMode: context.startMode };
+      const loaded = installPrg(parsePrg(input), this.memory, this.cpu, installOptions);
+      this.emit('programLoaded', loaded);
+      if (context.resumeAfterLoad) this.renderer.start();
+      return loaded;
+    } catch (error: unknown) {
+      // 装载失败后保留暂停状态，避免从已复位但未完整安装的机器继续执行。
+      this.renderer.pause();
+      throw error;
+    }
   }
 }

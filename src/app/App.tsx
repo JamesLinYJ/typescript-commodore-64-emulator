@@ -1,17 +1,17 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AppHeader } from './components/AppHeader';
 import { ControlPanel } from './components/ControlPanel';
-import { EmulatorWorkspace } from './components/EmulatorWorkspace';
-import { QuickActions } from './components/QuickActions';
+import { EmulatorWorkspace, type DisplayScale } from './components/EmulatorWorkspace';
 import type { BundledProgramDescriptor } from '../media/BundledProgramCatalog';
 import { useC64Emulator } from './useC64Emulator';
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const screenFrameRef = useRef<HTMLDivElement>(null);
-  const [zoom, setZoom] = useState(1.4);
+  const [displayScale, setDisplayScale] = useState<DisplayScale>('fit');
   const [darkTheme, setDarkTheme] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const emulator = useC64Emulator(canvasRef, screenFrameRef);
   const { loadBuiltInProgram, loadLocalProgram, reset, toggle } = emulator;
 
@@ -45,9 +45,32 @@ export function App() {
     setDarkTheme((current) => !current);
   }, []);
 
+  const toggleFullscreen = useCallback((): void => {
+    const screenFrame = screenFrameRef.current;
+    if (!screenFrame || !document.fullscreenEnabled) return;
+    const operation = document.fullscreenElement
+      ? document.exitFullscreen()
+      : screenFrame.requestFullscreen();
+    void operation.catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const handleFullscreenChange = (): void => {
+      setIsFullscreen(document.fullscreenElement === screenFrameRef.current);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   return (
     <div className={`app-page${darkTheme ? ' app-page--dark' : ''}`}>
-      <AppHeader phase={emulator.phase} darkTheme={darkTheme} onToggleTheme={toggleTheme} />
+      <AppHeader
+        darkTheme={darkTheme}
+        isFullscreen={isFullscreen}
+        onToggleFullscreen={toggleFullscreen}
+        onToggleTheme={toggleTheme}
+        phase={emulator.phase}
+      />
 
       <main className="dashboard" aria-label="TypeScript Commodore 64 Emulator 运行控制台">
         <section id="console" className="console-card" aria-label="Commodore 64 主机">
@@ -57,26 +80,40 @@ export function App() {
             framesPerSecond={emulator.framesPerSecond}
             message={emulator.message}
             messageTone={emulator.messageTone}
+            overBudgetFrames={emulator.overBudgetFrames}
             phase={emulator.phase}
             programCounter={emulator.programCounter}
+            renderP95Ms={emulator.renderP95Ms}
+            sampledFrames={emulator.sampledFrames}
             screenFrameRef={screenFrameRef}
-            zoom={zoom}
+            displayScale={displayScale}
           />
-          <QuickActions isReady={emulator.isReady} onLoadFile={handleLoadFile} onReset={reset} />
         </section>
 
         <ControlPanel
+          displayScale={displayScale}
           isReady={emulator.isReady}
           onLoadFile={handleLoadFile}
           onLoadProgram={handleLoadProgram}
           onPause={handlePause}
           onReset={reset}
           onRun={handleRun}
-          onZoomChange={setZoom}
+          onScaleChange={setDisplayScale}
+          onStepFrame={emulator.stepFrame}
           phase={emulator.phase}
-          zoom={zoom}
         />
       </main>
+
+      <footer className="app-footer">
+        <span>PAL 硬件模型 · MIT License</span>
+        <a
+          href="https://github.com/JamesLinYJ/typescript-commodore-64-emulator"
+          target="_blank"
+          rel="noreferrer"
+        >
+          JamesLinYJ 原始项目
+        </a>
+      </footer>
     </div>
   );
 }

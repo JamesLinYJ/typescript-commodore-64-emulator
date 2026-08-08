@@ -111,4 +111,12 @@ describe('Drive1541Machine', () => {
     machine.resetTiming();
     expect(machine.elapsedCycles).toBe(0);
   });
+
+  it('advances both VIAs and the disk mechanism during the CPU reset bus sequence', () => {
+    const { machine } = createMachine();
+
+    expect(machine.resetCpu()).toBe(7);
+    expect(machine.elapsedCycles).toBe(7);
+    expect(machine.cpu.pc).toBe(0xc000);
+  });
 });

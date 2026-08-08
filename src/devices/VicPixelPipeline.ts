@@ -38,6 +38,17 @@ export interface VicPixelPipelineOptions {
   readonly outputWidth?: number;
 }
 
+interface GraphicsPixelResult {
+  color: number;
+  foreground: boolean;
+}
+
+interface SpritePixelResult {
+  behindForeground: boolean;
+  color: number;
+  mask: number;
+}
+
 const PIXELS_PER_VIC_CYCLE = 8;
 const TEXT_COLUMN_COUNT = 40;
 const TEXT_COLUMN_WIDTH = 8;
@@ -64,6 +75,13 @@ export class VicPixelPipeline {
   private readonly outputWidth: number;
   private readonly visibleCropPhysicalPixel: number;
   private readonly linePixels: Uint32Array;
+  // 这两个结果槽随管线实例复用，避免为每个物理像素创建短命对象。
+  private readonly graphicsPixelResult: GraphicsPixelResult = { color: 0, foreground: false };
+  private readonly spritePixelResult: SpritePixelResult = {
+    behindForeground: false,
+    color: TRANSPARENT_PIXEL,
+    mask: 0,
+  };
 
   constructor(
     private readonly timing: VicTiming = PAL_VIC_TIMING,
@@ -98,6 +116,7 @@ export class VicPixelPipeline {
     if (cycle.lineStarted) this.reset(registers.borderColor);
 
     const physicalCycleX = (cycle.cycle - 1) * PIXELS_PER_VIC_CYCLE;
+    const spriteDisplayMask = fetch.spriteDisplayMask;
 
     let spriteSpriteCollisionMask = 0;
     let spriteForegroundCollisionMask = 0;
@@ -106,21 +125,26 @@ export class VicPixelPipeline {
       const vicX = (physicalX - VIC_X_ZERO_PHYSICAL_PIXEL) & VIC_X_COUNTER_MASK;
       const outputX = physicalX - this.visibleCropPhysicalPixel;
 
-      const graphics = this.graphicsPixel(vicX, registers, fetch);
+      this.resolveGraphicsPixel(vicX, registers, fetch);
+      const graphics = this.graphicsPixelResult;
       let outputColor = graphics.color;
 
-      const sprites = this.spritePixel(vicX, registers, fetch);
-      if ((sprites.mask & (sprites.mask - 1)) !== 0) {
-        spriteSpriteCollisionMask |= sprites.mask;
-      }
-      if (graphics.foreground && sprites.mask !== 0) {
-        spriteForegroundCollisionMask |= sprites.mask;
-      }
-      if (
-        sprites.color !== TRANSPARENT_PIXEL &&
-        !(graphics.foreground && sprites.behindForeground)
-      ) {
-        outputColor = sprites.color;
+      // 一般光栅线没有活动精灵；在周期级锁存为零时完全跳过八次精灵扫描。
+      if (spriteDisplayMask !== 0) {
+        this.resolveSpritePixel(vicX, spriteDisplayMask, registers, fetch);
+        const sprites = this.spritePixelResult;
+        if ((sprites.mask & (sprites.mask - 1)) !== 0) {
+          spriteSpriteCollisionMask |= sprites.mask;
+        }
+        if (graphics.foreground && sprites.mask !== 0) {
+          spriteForegroundCollisionMask |= sprites.mask;
+        }
+        if (
+          sprites.color !== TRANSPARENT_PIXEL &&
+          !(graphics.foreground && sprites.behindForeground)
+        ) {
+          outputColor = sprites.color;
+        }
       }
 
       // 边框属于最终模拟多路器：它遮住可见颜色，但不抑制此前已经发生的精灵碰撞。
@@ -144,20 +168,43 @@ export class VicPixelPipeline {
     return this.linePixels.slice();
   }
 
-  private graphicsPixel(
+  copyPixelsTo(target: Uint32Array, targetOffset: number): void {
+    if (!Number.isInteger(targetOffset) || targetOffset < 0) {
+      throw new RangeError(
+        `VIC-II raster target offset ${targetOffset} must be a non-negative integer.`,
+      );
+    }
+    if (targetOffset + this.linePixels.length > target.length) {
+      throw new RangeError(
+        `VIC-II raster of ${this.linePixels.length} pixels does not fit target length ${target.length} at offset ${targetOffset}.`,
+      );
+    }
+    target.set(this.linePixels, targetOffset);
+  }
+
+  private resolveGraphicsPixel(
     vicX: number,
     registers: VicPixelRegisters,
     fetch: VicFetchPipeline,
-  ): { readonly color: number; readonly foreground: boolean } {
+  ): void {
+    const result = this.graphicsPixelResult;
     const background0 = registers.backgroundColors[0] ?? registers.palette[0] ?? 0xff000000;
-    if (!registers.screenVisible) return { color: background0, foreground: false };
+    if (!registers.screenVisible) {
+      result.color = background0;
+      result.foreground = false;
+      return;
+    }
     if (!registers.displayModeValid) {
-      return { color: registers.palette[0] ?? 0xff000000, foreground: true };
+      result.color = registers.palette[0] ?? 0xff000000;
+      result.foreground = true;
+      return;
     }
 
     const displayX = vicX - TEXT_DISPLAY_VIC_X - registers.horizontalScroll;
     if (displayX < 0 || displayX >= TEXT_DISPLAY_WIDTH) {
-      return { color: background0, foreground: false };
+      result.color = background0;
+      result.foreground = false;
+      return;
     }
     const column = Math.trunc(displayX / TEXT_COLUMN_WIDTH);
     const pixel = displayX % TEXT_COLUMN_WIDTH;
@@ -166,88 +213,114 @@ export class VicPixelPipeline {
     const graphics = fetch.graphicsByte(column);
 
     if (registers.bitmapMode) {
-      return registers.multicolorMode
-        ? this.multicolorBitmapPixel(pixel, graphics, screenCode, colorRam, registers)
-        : this.highResolutionBitmapPixel(pixel, graphics, screenCode, registers);
+      if (registers.multicolorMode) {
+        this.resolveMulticolorBitmapPixel(pixel, graphics, screenCode, colorRam, registers);
+      } else {
+        this.resolveHighResolutionBitmapPixel(pixel, graphics, screenCode, registers);
+      }
+      return;
     }
-    return registers.multicolorMode && colorRam >= 8
-      ? this.multicolorTextPixel(pixel, graphics, colorRam, registers)
-      : this.highResolutionTextPixel(pixel, graphics, screenCode, colorRam, registers);
+    if (registers.multicolorMode && colorRam >= 8) {
+      this.resolveMulticolorTextPixel(pixel, graphics, colorRam, registers);
+    } else {
+      this.resolveHighResolutionTextPixel(pixel, graphics, screenCode, colorRam, registers);
+    }
   }
 
-  private highResolutionTextPixel(
+  private resolveHighResolutionTextPixel(
     pixel: number,
     graphics: number,
     screenCode: number,
     colorRam: number,
     registers: VicPixelRegisters,
-  ): { readonly color: number; readonly foreground: boolean } {
+  ): void {
+    const result = this.graphicsPixelResult;
     const foreground = (graphics & (0x80 >> pixel)) !== 0;
     if (foreground) {
-      return { color: registers.palette[colorRam] ?? registers.palette[0] ?? 0, foreground: true };
+      result.color = registers.palette[colorRam] ?? registers.palette[0] ?? 0;
+      result.foreground = true;
+      return;
     }
     const backgroundIndex = registers.extendedBackgroundMode ? screenCode >> 6 : 0;
-    return {
-      color: registers.backgroundColors[backgroundIndex] ?? registers.backgroundColors[0] ?? 0,
-      foreground: false,
-    };
+    result.color =
+      registers.backgroundColors[backgroundIndex] ?? registers.backgroundColors[0] ?? 0;
+    result.foreground = false;
   }
 
-  private multicolorTextPixel(
+  private resolveMulticolorTextPixel(
     pixel: number,
     graphics: number,
     colorRam: number,
     registers: VicPixelRegisters,
-  ): { readonly color: number; readonly foreground: boolean } {
+  ): void {
     const pair = Math.trunc(pixel / 2);
     const colorIndex = (graphics >> (6 - pair * 2)) & 0x03;
-    const colors = [
-      registers.backgroundColors[0] ?? 0,
-      registers.backgroundColors[1] ?? 0,
-      registers.backgroundColors[2] ?? 0,
-      registers.palette[colorRam & 0x07] ?? 0,
-    ] as const;
-    return { color: colors[colorIndex] ?? 0, foreground: colorIndex >= 2 };
+    const result = this.graphicsPixelResult;
+    switch (colorIndex) {
+      case 0:
+        result.color = registers.backgroundColors[0] ?? 0;
+        break;
+      case 1:
+        result.color = registers.backgroundColors[1] ?? 0;
+        break;
+      case 2:
+        result.color = registers.backgroundColors[2] ?? 0;
+        break;
+      default:
+        result.color = registers.palette[colorRam & 0x07] ?? 0;
+        break;
+    }
+    result.foreground = colorIndex >= 2;
   }
 
-  private highResolutionBitmapPixel(
+  private resolveHighResolutionBitmapPixel(
     pixel: number,
     graphics: number,
     screenCode: number,
     registers: VicPixelRegisters,
-  ): { readonly color: number; readonly foreground: boolean } {
+  ): void {
     const foreground = (graphics & (0x80 >> pixel)) !== 0;
     const paletteIndex = foreground ? screenCode >> 4 : screenCode & 0x0f;
-    return { color: registers.palette[paletteIndex] ?? 0, foreground };
+    this.graphicsPixelResult.color = registers.palette[paletteIndex] ?? 0;
+    this.graphicsPixelResult.foreground = foreground;
   }
 
-  private multicolorBitmapPixel(
+  private resolveMulticolorBitmapPixel(
     pixel: number,
     graphics: number,
     screenCode: number,
     colorRam: number,
     registers: VicPixelRegisters,
-  ): { readonly color: number; readonly foreground: boolean } {
+  ): void {
     const pair = Math.trunc(pixel / 2);
     const colorIndex = (graphics >> (6 - pair * 2)) & 0x03;
-    const colors = [
-      registers.backgroundColors[0] ?? 0,
-      registers.palette[screenCode >> 4] ?? 0,
-      registers.palette[screenCode & 0x0f] ?? 0,
-      registers.palette[colorRam] ?? 0,
-    ] as const;
-    return { color: colors[colorIndex] ?? 0, foreground: colorIndex >= 2 };
+    const result = this.graphicsPixelResult;
+    switch (colorIndex) {
+      case 0:
+        result.color = registers.backgroundColors[0] ?? 0;
+        break;
+      case 1:
+        result.color = registers.palette[screenCode >> 4] ?? 0;
+        break;
+      case 2:
+        result.color = registers.palette[screenCode & 0x0f] ?? 0;
+        break;
+      default:
+        result.color = registers.palette[colorRam] ?? 0;
+        break;
+    }
+    result.foreground = colorIndex >= 2;
   }
 
-  private spritePixel(
+  private resolveSpritePixel(
     vicX: number,
+    displayMask: number,
     registers: VicPixelRegisters,
     fetch: VicFetchPipeline,
-  ): { readonly behindForeground: boolean; readonly color: number; readonly mask: number } {
+  ): void {
     let mask = 0;
     let selectedColor = TRANSPARENT_PIXEL;
     let selectedBehindForeground = false;
-    const displayMask = fetch.spriteDisplayMask;
 
     for (let index = 0; index < registers.sprites.length; index += 1) {
       const sprite = registers.sprites[index];
@@ -265,7 +338,10 @@ export class VicPixelPipeline {
       }
     }
 
-    return { behindForeground: selectedBehindForeground, color: selectedColor, mask };
+    const result = this.spritePixelResult;
+    result.behindForeground = selectedBehindForeground;
+    result.color = selectedColor;
+    result.mask = mask;
   }
 }
 
@@ -289,9 +365,14 @@ function spritePixelColor(
   }
   const pair = Math.trunc(sourcePixel / 2);
   const colorIndex = (data >> (SPRITE_SOURCE_WIDTH - 2 - pair * 2)) & 0x03;
-  return (
-    [TRANSPARENT_PIXEL, registers.spriteMulticolor0, sprite.color, registers.spriteMulticolor1][
-      colorIndex
-    ] ?? TRANSPARENT_PIXEL
-  );
+  switch (colorIndex) {
+    case 1:
+      return registers.spriteMulticolor0;
+    case 2:
+      return sprite.color;
+    case 3:
+      return registers.spriteMulticolor1;
+    default:
+      return TRANSPARENT_PIXEL;
+  }
 }

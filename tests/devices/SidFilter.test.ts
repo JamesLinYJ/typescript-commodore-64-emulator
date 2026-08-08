@@ -19,14 +19,14 @@ describe('SidFilter', () => {
     const voice3 = 2_000 * 0xff;
     const direct = new SidFilter(SID_MODEL.mos8580, 1_000_000);
     direct.modeVolume = SID_FILTER_BIT.muteVoice3 | 0x0f;
-    direct.clock([0, 0, voice3]);
+    direct.clock(0, 0, voice3);
     expect(direct.outputPcm).toBe(0);
 
     const routed = new SidFilter(SID_MODEL.mos8580, 1_000_000);
     routed.cutoff = 0x07ff;
     routed.resonanceRouting = SID_FILTER_BIT.voice3;
     routed.modeVolume = SID_FILTER_BIT.muteVoice3 | SID_FILTER_BIT.highPass | 0x0f;
-    routed.clock([0, 0, voice3]);
+    routed.clock(0, 0, voice3);
     expect(routed.outputPcm).not.toBe(0);
   });
 
@@ -35,7 +35,7 @@ describe('SidFilter', () => {
     filter.cutoff = 0x0500;
     filter.resonanceRouting = 0xf1;
     filter.modeVolume = SID_FILTER_BIT.lowPass | 0x0f;
-    for (let cycle = 0; cycle < 100; cycle += 1) filter.clock([300_000, 0, 0]);
+    for (let cycle = 0; cycle < 100; cycle += 1) filter.clock(300_000, 0, 0);
 
     filter.reset();
 
@@ -43,7 +43,7 @@ describe('SidFilter', () => {
     expect(filter.resonanceRouting).toBe(0);
     expect(filter.modeVolume).toBe(0);
     expect(filter.outputPcm).toBe(0);
-    expect(filter.clock([0, 0, 0])).toBe(0);
+    expect(filter.clock(0, 0, 0)).toBe(0);
   });
 
   it('reproduces the MOS 6581 nonlinear low-pass impulse sequence', () => {
@@ -58,7 +58,7 @@ describe('SidFilter', () => {
     filter.modeVolume = SID_FILTER_BIT.lowPass | 0x0f;
 
     const actualPcm = expectedPcm.map((_, cycle) => {
-      filter.clock([cycle === 0 ? 400_000 : 0, 0, 0]);
+      filter.clock(cycle === 0 ? 400_000 : 0, 0, 0);
       return filter.outputPcm;
     });
 

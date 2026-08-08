@@ -59,6 +59,65 @@ function createTracingCpu(
 }
 
 describe('Cpu6502', () => {
+  it('enters the reset vector through the deterministic seven-cycle power-on sequence', () => {
+    const memory = new TracingMemory();
+    memory.bytes[0xfffc] = 0x34;
+    memory.bytes[0xfffd] = 0x12;
+
+    const cpu = new Cpu6502(memory);
+
+    expect(memory.accesses.map(({ address, kind }) => [address, kind])).toEqual([
+      [0x0000, 'read'],
+      [0x0000, 'read'],
+      [0x0100, 'read'],
+      [0x01ff, 'read'],
+      [0x01fe, 'read'],
+      [0xfffc, 'read'],
+      [0xfffd, 'read'],
+    ]);
+    expect(cpu.getRegisters()).toEqual({
+      accumulator: 0x00,
+      indexX: 0x00,
+      indexY: 0x00,
+      programCounter: 0x1234,
+      stackPointer: 0xfd,
+      status: 0x24,
+    });
+  });
+
+  it('preserves warm-reset registers while performing the exact reset bus sequence', () => {
+    const { cpu, memory } = createTracingCpu([0xea]);
+    cpu.restoreRegisters({
+      accumulator: 0x12,
+      indexX: 0x34,
+      indexY: 0x56,
+      programCounter: 0x4567,
+      stackPointer: 0x80,
+      status: 0xd9,
+    });
+    memory.bytes[0xfffc] = 0xcd;
+    memory.bytes[0xfffd] = 0xab;
+
+    expect(cpu.reset()).toBe(7);
+    expect(memory.accesses.map(({ address, kind }) => [address, kind])).toEqual([
+      [0x4567, 'read'],
+      [0x4567, 'read'],
+      [0x0180, 'read'],
+      [0x017f, 'read'],
+      [0x017e, 'read'],
+      [0xfffc, 'read'],
+      [0xfffd, 'read'],
+    ]);
+    expect(cpu.getRegisters()).toEqual({
+      accumulator: 0x12,
+      indexX: 0x34,
+      indexY: 0x56,
+      programCounter: 0xabcd,
+      stackPointer: 0x7d,
+      status: 0xdd,
+    });
+  });
+
   it('restores a validated instruction-boundary register state', () => {
     const { cpu } = createTestCpu([0xea]);
     cpu.restoreRegisters({
@@ -200,7 +259,7 @@ describe('Cpu6502', () => {
       [0xffff, 'read'],
     ]);
 
-    cpu.reset();
+    expect(cpu.reset()).toBe(7);
     expect(cpu.isJammed).toBe(false);
     expect(cpu.executeInstruction()).toBe(2);
     expect(cpu.isJammed).toBe(true);

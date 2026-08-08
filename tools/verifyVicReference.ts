@@ -370,10 +370,7 @@ function createPalFrameCapture(): PalFrameCapture {
     onFrameStart: () => pixels.fill(C64_PALETTE[0]),
     onRasterLine: (memory, rasterLine) => {
       if (rasterLine < firstVisibleRaster || rasterLine >= lastVisibleRasterExclusive) return;
-      pixels.set(
-        memory.vic.captureRasterLineState().pixels,
-        (rasterLine - firstVisibleRaster) * width,
-      );
+      memory.vic.copyRasterLinePixelsTo(pixels, (rasterLine - firstVisibleRaster) * width);
     },
     pixels,
   };

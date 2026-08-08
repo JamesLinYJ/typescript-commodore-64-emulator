@@ -114,7 +114,7 @@ export class Commodore1541Drive {
     this.requireConnected();
     this.mechanism.resetElectronics();
     this.memory.resetHardware();
-    this.cpu.reset();
+    this.machine.resetCpu();
     this.clock.resetClock();
   }
 

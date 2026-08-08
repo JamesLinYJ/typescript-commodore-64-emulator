@@ -25,6 +25,19 @@ export const CPU_VECTOR = {
   interruptRequest: 0xfffe,
 } as const;
 
-export const CPU_RESET_STATE = {
-  stackPointer: 0xff,
+// NMOS 6502 上电时除 RESET 明确控制的状态外并没有软件可依赖的寄存器值。
+// 模拟器仍需要可复现的构造结果，因此在执行第一次 RESET 微序列前使用固定初值。
+// SP 从 $00 开始并经过三次伪压栈读，最终得到常见的上电后 $FD。
+export const CPU_POWER_ON_STATE = {
+  accumulator: 0x00,
+  indexX: 0x00,
+  indexY: 0x00,
+  programCounter: 0x0000,
+  stackPointer: 0x00,
+  status: CpuStatusFlag.Unused,
+} as const;
+
+export const CPU_RESET_SEQUENCE = {
+  cycleCount: 7,
+  stackReadCount: 3,
 } as const;

@@ -10,8 +10,12 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { VicCycleSequencer } from '../../src/devices/VicCycleSequencer';
+import { VicFetchPipeline } from '../../src/devices/VicFetchPipeline';
 import { VicII } from '../../src/devices/VicII';
 import type { VicMemoryBus } from '../../src/devices/VicMemoryBus';
+import { VicPixelPipeline, type VicPixelRegisters } from '../../src/devices/VicPixelPipeline';
+import type { VicSprite } from '../../src/devices/VicSprite';
 import {
   VIC_INTERRUPT_BIT,
   VIC_REGISTER,
@@ -43,6 +47,50 @@ function runThrough(vic: VicII, memory: VicMemoryBus, rasterLine: number, cycle:
 }
 
 describe('VicPixelPipeline', () => {
+  it('does not inspect the sprite table when the latched display mask is empty', () => {
+    const cycle = new VicCycleSequencer().tick({
+      displayEnabled: false,
+      spriteEnableMask: 0,
+      spriteVerticalExpansionMask: 0,
+      spriteY: () => 0,
+      verticalScroll: 0,
+    });
+    const fetch = new VicFetchPipeline();
+    const emptySprites: readonly VicSprite[] = [];
+    const inaccessibleSprites = new Proxy(emptySprites, {
+      get: () => {
+        throw new Error('The empty sprite table should not be inspected.');
+      },
+    });
+    const black = 0xff000000;
+    const registers: VicPixelRegisters = {
+      backgroundColors: [black, black, black, black],
+      bitmapMode: false,
+      borderColor: black,
+      displayModeValid: true,
+      extendedBackgroundMode: false,
+      horizontalScroll: 0,
+      multicolorMode: false,
+      palette: [black],
+      screenVisible: false,
+      spriteMulticolor0: black,
+      spriteMulticolor1: black,
+      sprites: inaccessibleSprites,
+    };
+    const pipeline = new VicPixelPipeline();
+
+    expect(() =>
+      pipeline.clockCycle(cycle, 0xff, registers, fetch, {
+        recordSpriteForegroundCollision: () => {
+          throw new Error('An empty sprite mask cannot collide with graphics.');
+        },
+        recordSpriteSpriteCollision: () => {
+          throw new Error('An empty sprite mask cannot collide with another sprite.');
+        },
+      }),
+    ).not.toThrow();
+  });
+
   it('renders a fetched text bit at the two-cycle graphics pipeline position', () => {
     const vic = new VicII();
     const memory = new PixelTestMemory();

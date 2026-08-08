@@ -75,6 +75,8 @@ export class BrowserC64Input {
   private joystickGroundedLines = 0;
   private joystickPortValue: C64ControlPortNumber | null = null;
   private shiftLockLatched = false;
+  private visibilityDocument: Document | undefined;
+  private blurWindow: Window | undefined;
   private target: EventTarget | undefined;
 
   private readonly handleKeyDown = (event: Event): void => {
@@ -101,6 +103,15 @@ export class BrowserC64Input {
     event.preventDefault();
   };
 
+  private readonly handleHostBlur = (): void => {
+    // 宿主可能不会再投递 keyup；机械锁存的 Shift Lock 则不属于瞬态绑定。
+    this.releaseAllBindings();
+  };
+
+  private readonly handleVisibilityChange = (): void => {
+    if (this.visibilityDocument?.visibilityState === 'hidden') this.releaseAllBindings();
+  };
+
   constructor(options: BrowserC64InputOptions) {
     this.controlPorts = options.controlPorts;
     this.keyboard = options.keyboard;
@@ -122,14 +133,27 @@ export class BrowserC64Input {
     this.target = target;
     target.addEventListener('keydown', this.handleKeyDown);
     target.addEventListener('keyup', this.handleKeyUp);
+    target.addEventListener('blur', this.handleHostBlur);
+
+    this.visibilityDocument = this.resolveDocument(target);
+    this.visibilityDocument?.addEventListener('visibilitychange', this.handleVisibilityChange);
+    this.blurWindow = this.resolveWindow(target, this.visibilityDocument);
+    if (this.blurWindow !== target) this.blurWindow?.addEventListener('blur', this.handleHostBlur);
   }
 
   detach(): void {
     if (this.target) {
       this.target.removeEventListener('keydown', this.handleKeyDown);
       this.target.removeEventListener('keyup', this.handleKeyUp);
+      this.target.removeEventListener('blur', this.handleHostBlur);
+    }
+    this.visibilityDocument?.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    if (this.blurWindow !== this.target) {
+      this.blurWindow?.removeEventListener('blur', this.handleHostBlur);
     }
     this.target = undefined;
+    this.visibilityDocument = undefined;
+    this.blurWindow = undefined;
     this.releaseAllBindings();
     this.setShiftLockLatched(false);
   }
@@ -249,5 +273,21 @@ export class BrowserC64Input {
     if (this.shiftLockLatched === latched) return;
     this.shiftLockLatched = latched;
     this.keyboard.setKeyState('ShiftLock', latched);
+  }
+
+  private resolveDocument(target: EventTarget): Document | undefined {
+    if (typeof Document !== 'undefined' && target instanceof Document) return target;
+    if (typeof Node !== 'undefined' && target instanceof Node)
+      return target.ownerDocument ?? undefined;
+    if (typeof Window !== 'undefined' && target instanceof Window) return target.document;
+    return undefined;
+  }
+
+  private resolveWindow(
+    target: EventTarget,
+    ownerDocument: Document | undefined,
+  ): Window | undefined {
+    if (typeof Window !== 'undefined' && target instanceof Window) return target;
+    return ownerDocument?.defaultView ?? undefined;
   }
 }

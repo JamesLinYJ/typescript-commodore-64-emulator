@@ -258,6 +258,11 @@ export class VicII extends IoDevice implements VicCycleSignals {
     return result;
   }
 
+  /** 将当前完整光栅线直接复制到调用方缓冲区；显示热路径不需要构造诊断快照。 */
+  copyRasterLinePixelsTo(target: Uint32Array, targetOffset: number): void {
+    this.pixelPipeline.copyPixelsTo(target, targetOffset);
+  }
+
   captureRasterLineState(): VicRasterLineSnapshot {
     return {
       borderColors: this.lineBorderColors.slice(),

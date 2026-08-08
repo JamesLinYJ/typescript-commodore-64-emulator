@@ -28,7 +28,7 @@
     "noUncheckedSideEffectImports": true,
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
-    "skipLibCheck": true,
+    "skipLibCheck": false,
     "types": ["vite/client", "vitest/globals"]
   },
   "include": ["src", "tests"]

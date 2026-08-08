@@ -28,13 +28,6 @@ input {
   font: inherit;
 }
 
-button,
-a,
-select,
-input {
-  -webkit-tap-highlight-color: transparent;
-}
-
 button:focus-visible,
 a:focus-visible,
 select:focus-visible,
@@ -62,7 +55,7 @@ svg {
   --line-strong: #cbd5e1;
   --text: #15213a;
   --muted: #66758d;
-  --faint: #8a98ad;
+  --faint: #64748b;
   --primary: #1468e8;
   --primary-soft: #eef5ff;
   --primary-line: #bfd5fb;
@@ -90,7 +83,7 @@ svg {
   --line-strong: #405066;
   --text: #edf3fb;
   --muted: #a4b1c3;
-  --faint: #7f8ca0;
+  --faint: #96a5ba;
   --primary: #67a3ff;
   --primary-soft: #1b3150;
   --primary-line: #315f99;
@@ -122,47 +115,22 @@ svg {
 
 .app-title {
   flex: 0 0 auto;
+  display: grid;
+  gap: 0.16rem;
   color: var(--text);
+  text-decoration: none;
+}
+
+.app-title strong {
   font-size: 1.35rem;
   font-weight: 760;
   letter-spacing: -0.045em;
-  text-decoration: none;
 }
 
-.primary-navigation {
-  align-self: stretch;
-  display: flex;
-  align-items: stretch;
-  gap: clamp(1.5rem, 3.1vw, 3.25rem);
-}
-
-.primary-navigation a {
-  position: relative;
-  display: grid;
-  place-items: center;
-  color: var(--text);
-  font-size: 0.88rem;
-  font-weight: 560;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.primary-navigation a::after {
-  content: '';
-  position: absolute;
-  inset: auto 0 0;
-  height: 3px;
-  border-radius: 3px 3px 0 0;
-  background: transparent;
-}
-
-.primary-navigation a:hover,
-.primary-navigation a.is-active {
-  color: var(--primary);
-}
-
-.primary-navigation a.is-active::after {
-  background: var(--primary);
+.app-title span {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
 }
 
 .header-actions {
@@ -200,7 +168,7 @@ svg {
 .machine-status--loading,
 .global-status--paused,
 .machine-status--paused {
-  color: #d68a00;
+  color: #8a5600;
   background: #fff7df;
 }
 
@@ -208,6 +176,7 @@ svg {
 .app-page--dark .machine-status--loading,
 .app-page--dark .global-status--paused,
 .app-page--dark .machine-status--paused {
+  color: #f2b84b;
   background: #44351a;
 }
 
@@ -218,8 +187,8 @@ svg {
 }
 
 .icon-button {
-  width: 2.65rem;
-  height: 2.65rem;
+  width: 2.75rem;
+  height: 2.75rem;
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
@@ -246,6 +215,21 @@ svg {
   grid-template-columns: minmax(0, 2.32fr) minmax(20.5rem, 1fr);
   align-items: start;
   gap: 1.75rem;
+}
+
+.app-footer {
+  width: min(100%, 105rem);
+  margin: 0 auto;
+  padding: 0 clamp(1.25rem, 3vw, 2.75rem) 2rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.app-footer a {
+  color: var(--primary);
 }
 
 .console-card,
@@ -322,7 +306,7 @@ svg {
 
 .machine-facts dt {
   color: var(--faint);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .machine-facts dd {
@@ -350,7 +334,7 @@ svg {
     inset 0 0 0 1px rgb(255 255 255 / 3%),
     inset 0 -1.5rem 4rem rgb(0 0 0 / 22%),
     0 0.45rem 1rem rgb(15 23 42 / 14%);
-  cursor: crosshair;
+  cursor: pointer;
 }
 
 .screen-host {
@@ -358,15 +342,30 @@ svg {
   width: 100%;
   min-width: 0;
   min-height: 22rem;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: safe center;
   overflow: auto;
   scrollbar-color: #506079 #171b21;
 }
 
+.screen-stack {
+  position: relative;
+  flex: 0 0 auto;
+  aspect-ratio: 403 / 284;
+}
+
+.screen-host--fit .screen-stack {
+  width: min(100%, 806px);
+}
+
+.screen-host--fixed .screen-stack {
+  width: var(--screen-width);
+}
+
 .emulator-canvas {
   display: block;
-  width: min(100%, calc(500px * var(--screen-scale)));
+  width: 100%;
   height: auto;
   aspect-ratio: 403 / 284;
   flex: 0 0 auto;
@@ -379,9 +378,8 @@ svg {
 
 .boot-overlay {
   position: absolute;
+  inset: 0;
   z-index: 2;
-  width: min(100%, calc(500px * var(--screen-scale)));
-  aspect-ratio: 403 / 284;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -390,6 +388,30 @@ svg {
   transition:
     opacity 420ms ease,
     visibility 420ms ease;
+}
+
+.screen-focus-hint {
+  margin: 0.65rem 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.screen-focus-hint.is-active {
+  color: var(--primary);
+}
+
+.screen-frame:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  padding: clamp(0.75rem, 2vw, 2rem);
+  border-radius: 0;
+}
+
+.screen-frame:fullscreen .screen-host {
+  height: 100%;
+  min-height: 0;
 }
 
 .boot-overlay p {
@@ -426,7 +448,7 @@ svg {
   justify-content: space-between;
   gap: 1rem;
   color: var(--muted);
-  font-size: 0.69rem;
+  font-size: 0.75rem;
 }
 
 .emulator-feedback p {
@@ -436,91 +458,49 @@ svg {
   white-space: nowrap;
 }
 
-.emulator-feedback > span {
+.runtime-telemetry {
   flex: 0 0 auto;
-  font-family: Consolas, 'SFMono-Regular', monospace;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   color: var(--faint);
+  font-family: Consolas, 'SFMono-Regular', monospace;
+  white-space: nowrap;
+}
+
+.runtime-telemetry details {
+  position: relative;
+}
+
+.runtime-telemetry summary {
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.runtime-telemetry details > span {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 0.5rem 1.2rem rgb(15 23 42 / 12%);
 }
 
 .emulator-feedback.is-error,
-.emulator-feedback.is-error > span {
+.emulator-feedback.is-error .runtime-telemetry {
   color: var(--danger);
 }
 
-.quick-actions {
-  padding: 0.25rem 1.45rem 1.15rem;
-}
-
-.quick-actions h2,
 .panel-card h2 {
   margin: 0 0 0.85rem;
   color: var(--text);
   font-size: 1rem;
   font-weight: 720;
   letter-spacing: -0.025em;
-}
-
-.quick-actions__grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.75rem;
-}
-
-.quick-action {
-  min-width: 0;
-  min-height: 4.25rem;
-  padding: 0.7rem;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: 0.55rem;
-  color: var(--text);
-  background: linear-gradient(180deg, var(--surface), var(--surface-subtle));
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color 150ms ease,
-    box-shadow 150ms ease,
-    transform 150ms ease;
-}
-
-.quick-action__icon {
-  width: 2.15rem;
-  height: 2.15rem;
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  border-radius: 0.45rem;
-  color: var(--primary);
-  background: var(--primary-soft);
-}
-
-.quick-action__icon svg {
-  width: 1.05rem;
-  height: 1.05rem;
-}
-
-.quick-action > span:last-child {
-  min-width: 0;
-  display: grid;
-  gap: 0.24rem;
-}
-
-.quick-action strong {
-  overflow: hidden;
-  font-size: 0.76rem;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quick-action small {
-  overflow: hidden;
-  color: var(--faint);
-  font-size: 0.65rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .control-panel {
@@ -538,7 +518,7 @@ svg {
   display: block;
   margin-bottom: 0.45rem;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .select-row {
@@ -625,7 +605,7 @@ select {
 
 .drop-target small {
   color: var(--faint);
-  font-size: 0.67rem;
+  font-size: 0.75rem;
 }
 
 .drop-target.is-dragging {
@@ -636,7 +616,7 @@ select {
 
 .transport {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.65rem;
 }
 
@@ -652,28 +632,37 @@ select {
   box-shadow: 0 0.35rem 0.8rem color-mix(in srgb, var(--success) 20%, transparent);
 }
 
-.zoom-control {
+.scale-control {
   margin-top: 1.25rem;
   display: grid;
   gap: 0.65rem;
 }
 
-.zoom-control > span {
-  display: flex;
-  justify-content: space-between;
+.scale-control > span {
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
-.zoom-control output {
+.scale-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.scale-option {
+  min-height: 2.75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 0.45rem;
   color: var(--text);
-  font-weight: 700;
+  background: var(--surface);
+  cursor: pointer;
 }
 
-.zoom-control input {
-  width: 100%;
-  accent-color: var(--primary);
-  cursor: pointer;
+.scale-option[aria-pressed='true'] {
+  border-color: var(--primary-line);
+  color: var(--primary);
+  background: var(--primary-soft);
+  font-weight: 700;
 }
 
 .key-list {
@@ -687,7 +676,7 @@ select {
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
   gap: 0.75rem;
   border-bottom: 1px solid var(--line);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .key-list dt {
@@ -735,7 +724,6 @@ select:disabled {
 
 @media (hover: hover) {
   .icon-button:hover,
-  .quick-action:not(:disabled):hover,
   .button:not(:disabled):hover,
   .drop-target:not(:disabled):hover {
     border-color: var(--primary);
@@ -754,32 +742,16 @@ select:disabled {
     gap: 2rem;
   }
 
-  .primary-navigation {
-    gap: 1.5rem;
-  }
-
   .dashboard {
     grid-template-columns: minmax(0, 1.9fr) minmax(19rem, 1fr);
-  }
-
-  .quick-actions__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 68rem) {
   .app-header__inner {
     min-height: 4.5rem;
-    flex-wrap: wrap;
-    gap: 0 1.5rem;
-    padding-block: 0.65rem 0;
-  }
-
-  .primary-navigation {
-    order: 3;
-    width: 100%;
-    min-height: 2.65rem;
-    overflow-x: auto;
+    gap: 1.5rem;
+    padding-block: 0.65rem;
   }
 
   .dashboard {
@@ -796,7 +768,7 @@ select:disabled {
 }
 
 @media (max-width: 44rem) {
-  .app-title {
+  .app-title strong {
     font-size: 1.12rem;
   }
 
@@ -807,12 +779,16 @@ select:disabled {
   }
 
   .icon-button {
-    width: 2.3rem;
-    height: 2.3rem;
+    width: 2.75rem;
+    height: 2.75rem;
   }
 
   .dashboard {
     padding: 1rem;
+  }
+
+  .app-footer {
+    padding: 0 1rem 1.5rem;
   }
 
   .console-overview {
@@ -851,12 +827,16 @@ select:disabled {
     gap: 0.25rem;
   }
 
-  .emulator-feedback p {
+  .runtime-telemetry {
     width: 100%;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.35rem;
+    white-space: normal;
   }
 
-  .quick-actions {
-    padding-inline: 0.85rem;
+  .emulator-feedback p {
+    width: 100%;
   }
 
   .control-panel {
@@ -869,6 +849,10 @@ select:disabled {
 }
 
 @media (max-width: 31rem) {
+  .app-title span {
+    display: none;
+  }
+
   .header-actions {
     gap: 0.55rem;
   }
@@ -890,7 +874,6 @@ select:disabled {
     grid-column: 1 / -1;
   }
 
-  .quick-actions__grid,
   .select-row {
     grid-template-columns: 1fr;
   }

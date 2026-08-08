@@ -75,7 +75,7 @@ export class CanvasRenderer extends TypedEventEmitter<RendererEvents> {
   };
 
   constructor(
-    private readonly cpu: Cpu6502,
+    cpu: Cpu6502,
     private readonly memory: C64Memory,
     canvas: HTMLCanvasElement,
     private readonly clock: FrameClock = browserFrameClock,
@@ -142,6 +142,10 @@ export class CanvasRenderer extends TypedEventEmitter<RendererEvents> {
     this.scheduler.resetTiming();
   }
 
+  resetCpu(): number {
+    return this.scheduler.resetCpu();
+  }
+
   private scheduleNextFrame(): void {
     this.frameRequest = this.clock.request(this.handleAnimationFrame);
   }
@@ -172,8 +176,10 @@ export class CanvasRenderer extends TypedEventEmitter<RendererEvents> {
     }
 
     const y = raster - PAL_VIDEO_STANDARD.output.firstVisibleRaster;
-    const pixels = this.memory.vic.captureRasterLineState().pixels;
-    this.surface.frameBuffer.writeRow(y, pixels);
+    this.memory.vic.copyRasterLinePixelsTo(
+      this.surface.frameBuffer.pixels,
+      y * PAL_VIDEO_STANDARD.output.width,
+    );
   }
 }
 

@@ -102,6 +102,25 @@ describe('C64Machine', () => {
     expect(machine.elapsedCycles).toBe(0);
   });
 
+  it('advances the complete CPU reset bus sequence through every clocked device', () => {
+    const { cpu, memory } = createC64System();
+    const peripheral = {
+      cycles: 0,
+      advanceHostCycles(cycles: number): void {
+        this.cycles += cycles;
+      },
+      resetClock(): void {
+        this.cycles = 0;
+      },
+    };
+    const machine = new C64Machine(cpu, memory, [peripheral]);
+
+    expect(machine.resetCpu()).toBe(7);
+    expect(machine.elapsedCycles).toBe(7);
+    expect(peripheral.cycles).toBe(7);
+    expect(memory.vic.currentRasterCycle).toBe(7);
+  });
+
   it('stalls a CPU read until VIC-II releases BA on a bad line', () => {
     const { cpu, memory } = createC64System();
     memory.ram[0x0200] = 0xea;

@@ -12,7 +12,7 @@ import type { MemoryBus } from '../memory/MemoryBus';
 import { TypedEventEmitter } from '../../shared/TypedEventEmitter';
 import { hex, word } from '../../shared/numbers';
 import { BreakpointError } from './BreakpointError';
-import { CPU_RESET_STATE, CPU_VECTOR, CpuStatusFlag } from './cpuConstants';
+import { CPU_POWER_ON_STATE, CPU_RESET_SEQUENCE, CPU_VECTOR, CpuStatusFlag } from './cpuConstants';
 import { CpuInterruptTiming } from './CpuInterruptTiming';
 import { CpuOpcode, type AddressingMode } from './CpuOpcode';
 import type { CpuRegisters } from './CpuRegisters';
@@ -74,12 +74,19 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   constructor(mm: MemoryBus) {
     super();
-    this.a = this.cyclesConsumed = this.p = this.pc = this.sp = this.x = this.y = 0;
-
     this.memory = mm;
     this.useUndocumentedOpcodes = true;
     this.opcodes = this.getOpcodeTable();
     this.znTable = this.getTwoComplementTable();
+
+    // 构造使用确定性的上电状态；紧随其后的 RESET 仍通过七个真实读周期进入向量。
+    this.a = CPU_POWER_ON_STATE.accumulator;
+    this.x = CPU_POWER_ON_STATE.indexX;
+    this.y = CPU_POWER_ON_STATE.indexY;
+    this.p = CPU_POWER_ON_STATE.status;
+    this.sp = CPU_POWER_ON_STATE.stackPointer;
+    this.pc = CPU_POWER_ON_STATE.programCounter;
+    this.cyclesConsumed = 0;
 
     this.reset();
   }
@@ -174,21 +181,36 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     return 7;
   }
 
-  /** 复位 CPU 寄存器并从复位向量装入 PC。 */
-  reset() {
+  /**
+   * 执行 NMOS 6502/6510 的七周期 RESET 微序列。
+   *
+   * RESET 把三个原本的压栈写周期变为读周期，但 SP 仍逐次递减。运行中复位不会
+   * 初始化 A、X、Y 或其余状态位；只有 I 被强制置位。
+   *
+   * @returns RESET 固定消耗的七个 CPU 总线周期。
+   */
+  reset(): number {
     const pcOld = this.pc;
-    this.a = 0x00;
-    this.x = 0x00;
-    this.y = 0x00;
-    this.p = CpuStatusFlag.InterruptDisable | CpuStatusFlag.Unused;
-    this.sp = CPU_RESET_STATE.stackPointer;
     this.jammed = false;
     this.jamBusCycleIndex = 0;
+    this.memoryAccess = CpuMemoryAccess.Read;
     this.interruptTiming.reset();
-    // 复位向量的低、高字节仍通过内存总线读取，保留可观察的地址访问。
-    this.pc = this.memory.readWord(CPU_VECTOR.reset);
+    this.p |= CpuStatusFlag.InterruptDisable;
+
+    this.dummyRead(this.pc);
+    this.dummyRead(this.pc);
+    for (let cycle = 0; cycle < CPU_RESET_SEQUENCE.stackReadCount; cycle += 1) {
+      this.dummyRead(CPU_PAGE_SIZE | this.sp);
+      this.sp = (this.sp - 1) & CPU_BYTE_MAX;
+    }
+
+    const vectorLow = this.memory.read(CPU_VECTOR.reset);
+    const vectorHigh = this.memory.read(CPU_VECTOR.reset + 1);
+    this.pc = vectorLow | (vectorHigh << CPU_PAGE_SHIFT);
+    this.cyclesConsumed = CPU_RESET_SEQUENCE.cycleCount;
     // 事件只在寄存器状态已经一致后发布。
     this.emit('reset', { previousProgramCounter: pcOld, programCounter: this.pc });
+    return this.cyclesConsumed;
   }
 
   /** 返回不暴露内部可变字段的寄存器快照。 */

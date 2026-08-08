@@ -99,6 +99,41 @@ describe('Commodore GCR', () => {
     expect(decodeCommodoreGcr(badChecksum.slice(dataOffset, dataOffset + 325))[257]).toBe(0xff);
   });
 
+  it.each([
+    ['header descriptor', D64_ERROR_CODE.headerNotFound],
+    ['sync', D64_ERROR_CODE.syncNotFound],
+    ['data descriptor', D64_ERROR_CODE.dataBlockNotFound],
+    ['data checksum', D64_ERROR_CODE.dataChecksum],
+    ['header checksum', D64_ERROR_CODE.headerChecksum],
+    ['disk ID', D64_ERROR_CODE.diskIdMismatch],
+  ] as const)('does not silently normalize a representable %s error', (_description, errorCode) => {
+    const sector = new Uint8Array(256);
+    const header = { id1: 1, id2: 2, sector: 0, track: 1 } as const;
+    const normal = encodeD64SectorToGcr(sector, header);
+
+    expect(encodeD64SectorToGcr(sector, header, errorCode)).not.toEqual(normal);
+  });
+
+  it.each([
+    ['write verify', D64_ERROR_CODE.verify],
+    ['write protection', D64_ERROR_CODE.writeProtected],
+    ['data-block length', D64_ERROR_CODE.dataBlockLength],
+    ['format speed', D64_ERROR_CODE.formatSpeed],
+    ['drive not ready', D64_ERROR_CODE.drive],
+    ['GCR decode', D64_ERROR_CODE.decode],
+  ] as const)(
+    'rejects the non-unique %s status instead of encoding a normal sector',
+    (_description, errorCode) => {
+      expect(() =>
+        encodeD64SectorToGcr(
+          new Uint8Array(256),
+          { id1: 1, id2: 2, sector: 0, track: 1 },
+          errorCode,
+        ),
+      ).toThrow(/does not define a unique passive GCR-sector representation/);
+    },
+  );
+
   it('builds exact speed-zone track lengths while leaving only physical gap bytes unused', () => {
     const disk = createDiskWithId(0x4a, 0x53);
     for (const track of [1, 18, 25, 31]) {

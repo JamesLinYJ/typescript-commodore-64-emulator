@@ -115,4 +115,23 @@ describe('VicII', () => {
     expect(vic.read(VIC_REGISTER.borderColor)).toBe(0xf5);
     expect(vic.read(VIC_REGISTER.firstUnused)).toBe(0xff);
   });
+
+  it('copies the complete raster line into an existing target at an explicit offset', () => {
+    const vic = new VicII();
+    vic.write(VIC_REGISTER.borderColor, 0x05);
+    vic.tickCycle(TEST_VIC_MEMORY);
+    const expected = vic.captureRasterLineState().pixels;
+    const guardPixel = 0xff123456;
+    const targetOffset = 2;
+    const target = new Uint32Array(expected.length + 3).fill(guardPixel);
+
+    vic.copyRasterLinePixelsTo(target, targetOffset);
+
+    expect(target.subarray(targetOffset, targetOffset + expected.length)).toEqual(expected);
+    expect(target[0]).toBe(guardPixel);
+    expect(target[1]).toBe(guardPixel);
+    expect(target.at(-1)).toBe(guardPixel);
+    expect(() => vic.copyRasterLinePixelsTo(target, -1)).toThrow(/offset/);
+    expect(() => vic.copyRasterLinePixelsTo(new Uint32Array(expected.length), 1)).toThrow(/fit/);
+  });
 });
