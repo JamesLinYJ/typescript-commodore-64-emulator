@@ -70,6 +70,20 @@ const LIGHT_PEN_TIMING_PROGRAM: ReferenceAsset = {
   url: `${VICE_TEST_ROOT}/lp-trigger/test2.prg?format=raw`,
 };
 
+const LIGHT_PEN_RASTER_PROGRAM: ReferenceAsset = {
+  cacheFileName: 'vic-light-pen-test1.prg',
+  fileName: 'test1.prg',
+  sha256: '8f41928e76d7d8e21271dbaa0fdc1dbce6c8481ed94d505c44f419aa521f3bad',
+  url: `${VICE_TEST_ROOT}/lp-trigger/test1.prg?format=raw`,
+};
+
+const LIGHT_PEN_RASTER_REFERENCE_IMAGE: ReferenceAsset = {
+  cacheFileName: 'vic-light-pen-test1.prg.png',
+  fileName: 'test1.prg.png',
+  sha256: 'c5f2d56fe7b6810c8971c0455905ccbbc9e9eb7365c7c9545ea1e64c3cde24a7',
+  url: `${VICE_TEST_ROOT}/lp-trigger/references/test1.prg.png?format=raw`,
+};
+
 const DMA_DELAY_PROGRAM: ReferenceAsset = {
   fileName: 'test3-28-07.prg',
   sha256: '28297d89f31b18a432006e156df380b8677b074d5650556932d6ace2285d1847',
@@ -121,6 +135,12 @@ const SPRITE_DMA_57_REFERENCE_IMAGE: ReferenceAsset = {
 };
 
 const PIXEL_REFERENCE_DEFINITIONS = [
+  {
+    description: 'light-pen synchronized border-color dot phase',
+    entryPoint: 0x080d,
+    program: LIGHT_PEN_RASTER_PROGRAM,
+    referenceImage: LIGHT_PEN_RASTER_REFERENCE_IMAGE,
+  },
   {
     description: 'dynamic bad-line DMA',
     entryPoint: 0x080d,

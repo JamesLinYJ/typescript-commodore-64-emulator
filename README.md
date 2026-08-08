@@ -118,8 +118,8 @@ SO/SYNC 时序测量与上游两张预期表逐字节完全一致。
 `irqnmi-new.prg`，逐格核对 19×19 组 CIA1 IRQ 与 CIA2 NMI 相对时序。该矩阵会同时覆盖
 NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执行一条 handler 指令的迟到边沿。
 
-`verify:vic` 会验证 PAL 光栅 IRQ，并把动态坏线、hires/multicolor 精灵优先级以及
-`$D017` 在第 54、57 周期切换时的四个完整画面分别与 VICE revision 46176 参考 PNG
+`verify:vic` 会验证 PAL 光栅 IRQ，并把光笔同步边框色、动态坏线、hires/multicolor
+精灵优先级以及 `$D017` 在第 54、57 周期切换时的五个完整画面分别与 VICE revision 46176 参考 PNG
 比较。每张画面必须有 104,448 个色板索引像素完全一致，不使用 RGB 容差掩盖时序偏移。
 
 `verify:vic:sprites` 会从干净 BASIC 启动 revision 46176 的两项 VICE 精灵碰撞程序，

@@ -132,6 +132,15 @@ describe('VicII', () => {
     expect(vic.read(VIC_REGISTER.firstUnused)).toBe(0xff);
   });
 
+  it('makes a border-color register write readable without advancing a dot', () => {
+    const vic = new VicII();
+
+    vic.write(VIC_REGISTER.borderColor, 0x06);
+
+    expect(vic.currentRasterCycle).toBe(0);
+    expect(vic.read(VIC_REGISTER.borderColor)).toBe(0xf6);
+  });
+
   it('copies the complete raster line into an existing target at an explicit offset', () => {
     const vic = new VicII();
     vic.write(VIC_REGISTER.borderColor, 0x05);

@@ -75,6 +75,7 @@ export class VicPixelPipeline {
   private readonly outputWidth: number;
   private readonly visibleCropPhysicalPixel: number;
   private readonly linePixels: Uint32Array;
+  private borderColorOutputDelay: number | undefined;
   // 这两个结果槽随管线实例复用，避免为每个物理像素创建短命对象。
   private readonly graphicsPixelResult: GraphicsPixelResult = { color: 0, foreground: false };
   private readonly spritePixelResult: SpritePixelResult = {
@@ -100,7 +101,9 @@ export class VicPixelPipeline {
   }
 
   reset(borderColor: number): void {
-    this.linePixels.fill(borderColor >>> 0);
+    const normalizedColor = borderColor >>> 0;
+    this.linePixels.fill(normalizedColor);
+    this.borderColorOutputDelay = normalizedColor;
   }
 
   clockCycle(
@@ -113,10 +116,15 @@ export class VicPixelPipeline {
     if (cycle.cycle < 1 || cycle.cycle > this.timing.cyclesPerRasterLine) {
       throw new RangeError(`VIC-II pixel cycle ${cycle.cycle} is outside the selected timing.`);
     }
-    if (cycle.lineStarted) this.reset(registers.borderColor);
+    if (cycle.lineStarted) this.linePixels.fill(registers.borderColor >>> 0);
 
     const physicalCycleX = (cycle.cycle - 1) * PIXELS_PER_VIC_CYCLE;
     const spriteDisplayMask = fetch.spriteDisplayMask;
+    // PAL 6569 的颜色寄存器先完成 CPU 可见锁存，最终边框多路器再经过一个 dot
+    // 的输出级；这个标量跨八像素批次和光栅线保留，不延迟背景或碰撞状态。
+    const borderColor = registers.borderColor >>> 0;
+    const delayedBorderColor = this.borderColorOutputDelay ?? borderColor;
+    this.borderColorOutputDelay = borderColor;
 
     // 边框最终覆盖颜色，且没有活动精灵时也不可能产生碰撞。整周期边框因此可以按
     // 连续像素段直接写入，避免执行八次不具状态的图形解码。
@@ -125,7 +133,10 @@ export class VicPixelPipeline {
       const firstOutput = Math.max(0, outputStart);
       const lastOutput = Math.min(this.outputWidth, outputStart + PIXELS_PER_VIC_CYCLE);
       for (let outputX = firstOutput; outputX < lastOutput; outputX += 1) {
-        this.linePixels[outputX] = registers.borderColor >>> 0;
+        this.linePixels[outputX] = borderColor;
+      }
+      if (outputStart >= 0 && outputStart < this.outputWidth) {
+        this.linePixels[outputStart] = delayedBorderColor;
       }
       return;
     }
@@ -161,7 +172,7 @@ export class VicPixelPipeline {
 
       // 边框属于最终模拟多路器：它遮住可见颜色，但不抑制此前已经发生的精灵碰撞。
       if ((borderPixelMask & (0x80 >> pixelInCycle)) !== 0) {
-        outputColor = registers.borderColor;
+        outputColor = pixelInCycle === 0 ? delayedBorderColor : borderColor;
       }
       if (outputX >= 0 && outputX < this.outputWidth) {
         this.linePixels[outputX] = outputColor >>> 0;

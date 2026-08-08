@@ -92,7 +92,7 @@ describe('VicPixelPipeline', () => {
     ).not.toThrow();
   });
 
-  it('writes each fully covered cycle with the border color sampled for that cycle', () => {
+  it('delays a changed border color by one dot across an eight-pixel batch', () => {
     const signals = {
       displayEnabled: true,
       spriteEnableMask: 0,
@@ -138,8 +138,136 @@ describe('VicPixelPipeline', () => {
 
     expect(Array.from(pipeline.snapshot())).toEqual([
       ...Array<number>(8).fill(black),
-      ...Array<number>(8).fill(red),
+      black,
+      ...Array<number>(7).fill(red),
     ]);
+  });
+
+  it('pipelines consecutive border writes without delaying background pixels', () => {
+    const signals = {
+      displayEnabled: false,
+      spriteEnableMask: 0,
+      spriteVerticalExpansionMask: 0,
+      spriteY: () => 0,
+      verticalScroll: 0,
+    };
+    const sequencer = new VicCycleSequencer();
+    const fetch = new VicFetchPipeline();
+    const pipeline = new VicPixelPipeline(PAL_VIC_TIMING, {
+      firstVisibleCycle: 1,
+      outputWidth: 32,
+    });
+    const black = 0xff000000;
+    const red = 0xffe04040;
+    const blue = 0xff4040e0;
+    const green = 0xff40e040;
+    const base: VicPixelRegisters = {
+      backgroundColors: [black, black, black, black],
+      bitmapMode: false,
+      borderColor: black,
+      displayModeValid: true,
+      extendedBackgroundMode: false,
+      horizontalScroll: 0,
+      multicolorMode: false,
+      palette: [black, red, blue, green],
+      screenVisible: false,
+      spriteMulticolor0: black,
+      spriteMulticolor1: black,
+      sprites: [],
+    };
+    const collisions = {
+      recordSpriteForegroundCollision: () => undefined,
+      recordSpriteSpriteCollision: () => undefined,
+    };
+
+    pipeline.clockCycle(sequencer.tick(signals), 0xff, base, fetch, collisions);
+    pipeline.clockCycle(
+      sequencer.tick(signals),
+      0xff,
+      { ...base, borderColor: red },
+      fetch,
+      collisions,
+    );
+    pipeline.clockCycle(
+      sequencer.tick(signals),
+      0xff,
+      { ...base, borderColor: blue },
+      fetch,
+      collisions,
+    );
+    pipeline.clockCycle(
+      sequencer.tick(signals),
+      0x00,
+      { ...base, backgroundColors: [green, black, black, black], borderColor: green },
+      fetch,
+      collisions,
+    );
+
+    expect(Array.from(pipeline.snapshot())).toEqual([
+      ...Array<number>(8).fill(black),
+      black,
+      ...Array<number>(7).fill(red),
+      red,
+      ...Array<number>(7).fill(blue),
+      ...Array<number>(8).fill(green),
+    ]);
+  });
+
+  it('keeps the one-dot border phase across a raster-line boundary', () => {
+    const signals = {
+      displayEnabled: true,
+      spriteEnableMask: 0,
+      spriteVerticalExpansionMask: 0,
+      spriteY: () => 0,
+      verticalScroll: 0,
+    };
+    const sequencer = new VicCycleSequencer();
+    const fetch = new VicFetchPipeline();
+    const pipeline = new VicPixelPipeline(PAL_VIC_TIMING, {
+      firstVisibleCycle: 1,
+      outputWidth: 8,
+    });
+    const black = 0xff000000;
+    const red = 0xffe04040;
+    const blue = 0xff4040e0;
+    const base: VicPixelRegisters = {
+      backgroundColors: [black, black, black, black],
+      bitmapMode: false,
+      borderColor: black,
+      displayModeValid: true,
+      extendedBackgroundMode: false,
+      horizontalScroll: 0,
+      multicolorMode: false,
+      palette: [black, red, blue],
+      screenVisible: true,
+      spriteMulticolor0: black,
+      spriteMulticolor1: black,
+      sprites: [],
+    };
+    const collisions = {
+      recordSpriteForegroundCollision: () => undefined,
+      recordSpriteSpriteCollision: () => undefined,
+    };
+
+    for (let cycle = 1; cycle < PAL_VIC_TIMING.cyclesPerRasterLine; cycle += 1) {
+      pipeline.clockCycle(sequencer.tick(signals), 0xff, base, fetch, collisions);
+    }
+    pipeline.clockCycle(
+      sequencer.tick(signals),
+      0xff,
+      { ...base, borderColor: red },
+      fetch,
+      collisions,
+    );
+    pipeline.clockCycle(
+      sequencer.tick(signals),
+      0xff,
+      { ...base, borderColor: blue },
+      fetch,
+      collisions,
+    );
+
+    expect(Array.from(pipeline.snapshot())).toEqual([red, ...Array<number>(7).fill(blue)]);
   });
 
   it('renders a fetched text bit at the two-cycle graphics pipeline position', () => {
