@@ -71,6 +71,36 @@ function configureObservedOutputs(cia: ObservedMos6526): void {
   cia.clearTransitions();
 }
 
+interface TodDividerReference {
+  mode50Hz: boolean;
+  phase: number;
+  stopped: boolean;
+  tenths: number;
+}
+
+function pulseTodDividerReference(reference: TodDividerReference, pulses: number): void {
+  if (reference.stopped) return;
+  const terminalPhase = reference.mode50Hz ? 4 : 5;
+  for (let pulse = 0; pulse < pulses; pulse += 1) {
+    if (reference.phase === terminalPhase) {
+      reference.phase = 0;
+      reference.tenths = (reference.tenths + 1) % 10;
+    } else {
+      reference.phase = (reference.phase + 1) % 6;
+    }
+  }
+}
+
+function createFixedRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
+}
+
 describe('Mos6526', () => {
   it('combines output latches and data-direction registers at the port pins', () => {
     const cia = new Mos6526();
@@ -268,6 +298,71 @@ describe('Mos6526', () => {
 
     cia.tick(22);
     expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x01);
+  });
+
+  it('keeps the TOD stopped after reset until tenths is written', () => {
+    const cia = new Mos6526();
+
+    cia.tickTimeOfDayInput(6);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x00);
+
+    cia.write(CIA_REGISTER.timeOfDayTenths, 0x00);
+    cia.tickTimeOfDayInput(5);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x00);
+    cia.tickTimeOfDayInput(1);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x01);
+  });
+
+  it('misses the 50 Hz terminal phase when switching from phase five', () => {
+    const cia = new Mos6526();
+    cia.write(CIA_REGISTER.timeOfDayTenths, 0x00);
+
+    cia.tickTimeOfDayInput(5);
+    cia.write(CIA_REGISTER.timerAControl, CIA_TIMER_CONTROL_BIT.timeOfDay50Hz);
+    cia.tickTimeOfDayInput(5);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x00);
+
+    cia.tickTimeOfDayInput(1);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x01);
+  });
+
+  it('matches a six-phase TOD divider after every fixed-random operation', () => {
+    const cia = new Mos6526();
+    const reference: TodDividerReference = {
+      mode50Hz: false,
+      phase: 0,
+      stopped: true,
+      tenths: 0,
+    };
+    const random = createFixedRandom(0x6526_5060);
+
+    for (let step = 0; step < 20_000; step += 1) {
+      const choice = random() % 8;
+      if (choice <= 3) {
+        const pulses = random() % 9;
+        cia.tickTimeOfDayInput(pulses);
+        pulseTodDividerReference(reference, pulses);
+      } else if (choice === 4) {
+        reference.mode50Hz = !reference.mode50Hz;
+        cia.write(
+          CIA_REGISTER.timerAControl,
+          reference.mode50Hz ? CIA_TIMER_CONTROL_BIT.timeOfDay50Hz : 0,
+        );
+      } else if (choice === 5) {
+        cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+        reference.stopped = true;
+      } else {
+        const tenths = random() % 10;
+        cia.write(CIA_REGISTER.timeOfDayTenths, tenths);
+        reference.tenths = tenths;
+        if (reference.stopped) {
+          reference.phase = 0;
+          reference.stopped = false;
+        }
+      }
+
+      expect(cia.read(CIA_REGISTER.timeOfDayTenths), `step ${step}`).toBe(reference.tenths);
+    }
   });
 
   it('keeps timer, interrupt, and TOD phase identical through the single-cycle fast path', () => {

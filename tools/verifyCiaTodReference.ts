@@ -22,7 +22,7 @@ const UPSTREAM_TEST_REVISION = 46_176;
 const REFERENCE_DIRECTORY =
   `https://sourceforge.net/p/vice-emu/code/${UPSTREAM_TEST_REVISION}/tree/` + 'testprogs/CIA/tod';
 const BASIC_BOOT_FRAME_LIMIT = 300;
-const RESULT_FRAME_LIMIT = 3_000;
+const RESULT_FRAME_LIMIT = 3_500;
 const PROGRAM_ENTRY_ADDRESS = 0x080d;
 const RESULT_ADDRESS = 0xd7ff;
 const SUCCESS_RESULT = 0x00;
@@ -83,6 +83,13 @@ const CIA_TOD_REFERENCES = [
     expectedScreenCodes: [0x35, 0x36],
     fileName: 'hzsync5.prg',
     sha256: '66b364f35ae2ac12dc0511a08e789f62c982e9a14c784b8bf23eff72bbb5bb09',
+  },
+  {
+    cachePath: resolve('output/reference/cia-tod-hzsync6.prg'),
+    description: 'running-clock 60-to-50 Hz terminal-phase switch',
+    expectedScreenCodes: [0x31, 0x36, 0x37],
+    fileName: 'hzsync6.prg',
+    sha256: '39a5fb6c2fc930ee31c8f852be8c13e61d9521892db395ce112d4a1a3389f277',
   },
 ] as const satisfies readonly CiaTodReference[];
 

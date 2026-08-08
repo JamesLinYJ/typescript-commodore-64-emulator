@@ -80,8 +80,8 @@ export class Mos6526 extends IoDevice {
   private timerBReadCollision = false;
   private readonly serialPort = new Mos6526SerialPort();
   private timeOfDayCycleAccumulator = 0;
-  private timeOfDayInputPulseCount = 0;
-  private timeOfDayStopped = false;
+  private timeOfDayDividerPhase = 0;
+  private timeOfDayStopped = true;
   private countPinHigh = true;
   private flagPinHigh = true;
   private portControlOutputHighValue = true;
@@ -173,8 +173,8 @@ export class Mos6526 extends IoDevice {
     this.timerBReadCollision = false;
     this.serialPort.reset();
     this.timeOfDayCycleAccumulator = 0;
-    this.timeOfDayInputPulseCount = 0;
-    this.timeOfDayStopped = false;
+    this.timeOfDayDividerPhase = 0;
+    this.timeOfDayStopped = true;
     this.countPinHigh = true;
     this.portControlOutputHighValue = true;
     this.portControlPulseCyclesRemaining = 0;
@@ -285,17 +285,30 @@ export class Mos6526 extends IoDevice {
 
   tickTimeOfDayInput(pulses = 1): void {
     const inputPulses = Math.max(0, Math.trunc(pulses));
+    if (this.timeOfDayStopped) return;
     const control = this.registers[CIA_REGISTER.timerAControl] ?? 0;
-    const pulsesPerTenth =
+    const terminalPhase =
       (control & CIA_TIMER_CONTROL_BIT.timeOfDay50Hz) !== 0
-        ? CIA_TIME_OF_DAY.inputPulsesAt50Hz
-        : CIA_TIME_OF_DAY.inputPulsesAt60Hz;
+        ? CIA_TIME_OF_DAY.inputPulsesAt50Hz - 1
+        : CIA_TIME_OF_DAY.inputPulsesAt60Hz - 1;
+    const phaseCount = CIA_TIME_OF_DAY.inputPulsesAt60Hz;
 
-    this.timeOfDayInputPulseCount += inputPulses;
-    while (this.timeOfDayInputPulseCount >= pulsesPerTenth) {
-      this.timeOfDayInputPulseCount -= pulsesPerTenth;
-      if (!this.timeOfDayStopped) this.incrementTimeOfDay();
+    // 三位环形分频器有六个有效相位。每个输入边沿先比较当前相位；
+    // 50 Hz 在相位 4 提前回零，60 Hz 则在相位 5 回零。
+    const pulsesUntilFirstUpdate =
+      this.timeOfDayDividerPhase <= terminalPhase
+        ? terminalPhase - this.timeOfDayDividerPhase + 1
+        : phaseCount - this.timeOfDayDividerPhase + terminalPhase + 1;
+    if (inputPulses < pulsesUntilFirstUpdate) {
+      this.timeOfDayDividerPhase = (this.timeOfDayDividerPhase + inputPulses) % phaseCount;
+      return;
     }
+
+    const pulsesAfterFirstUpdate = inputPulses - pulsesUntilFirstUpdate;
+    const pulsesPerFollowingUpdate = terminalPhase + 1;
+    const updateCount = 1 + Math.floor(pulsesAfterFirstUpdate / pulsesPerFollowingUpdate);
+    this.timeOfDayDividerPhase = pulsesAfterFirstUpdate % pulsesPerFollowingUpdate;
+    for (let update = 0; update < updateCount; update += 1) this.incrementTimeOfDay();
   }
 
   protected readPortAExternalInputs(portAOutput: number, portBOutput: number): number {
@@ -646,7 +659,7 @@ export class Mos6526 extends IoDevice {
     if (destination === this.timeOfDay) {
       if (register === CIA_REGISTER.timeOfDayHours) this.timeOfDayStopped = true;
       if (register === CIA_REGISTER.timeOfDayTenths) {
-        if (this.timeOfDayStopped) this.timeOfDayInputPulseCount = 0;
+        if (this.timeOfDayStopped) this.timeOfDayDividerPhase = 0;
         this.timeOfDayStopped = false;
       }
     }
