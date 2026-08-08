@@ -48,4 +48,26 @@ describe('SidOscillator', () => {
 
     expect(resetOscillator.oscillatorReadback).toBe(uninterruptedOscillator.oscillatorReadback);
   });
+
+  it('does not pre-write combined triangle output on a TEST noise transition', () => {
+    const oscillator = new SidOscillator(SID_MODEL.mos6581);
+    oscillator.frequency = 0;
+    oscillator.setControl(SID_CONTROL_BIT.test | SID_CONTROL_BIT.noise | SID_CONTROL_BIT.triangle);
+
+    // 6581 的 LFSR 复位衰减在约 57k 周期内把全部 23 位恢复为一。
+    for (let cycle = 0; cycle < 60_000; cycle += 1) {
+      oscillator.clock();
+      oscillator.updateWaveformOutput();
+    }
+
+    oscillator.setControl(SID_CONTROL_BIT.noise);
+    expect(oscillator.oscillatorReadback).toBe(0xfe);
+
+    oscillator.frequency = 0xffff;
+    for (let cycle = 0; cycle < 11; cycle += 1) {
+      oscillator.clock();
+      oscillator.updateWaveformOutput();
+    }
+    expect(oscillator.oscillatorReadback).toBe(0xfe);
+  });
 });

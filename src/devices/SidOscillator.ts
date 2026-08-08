@@ -22,6 +22,7 @@ const FREQUENCY_MASK = 0xffff;
 const WAVEFORM_SELECTION_MASK = 0x0f;
 const WAVEFORM_TABLE_INDEX_MASK = 0x07;
 const WAVEFORM_NOISE_BIT = 0x08;
+const WAVEFORM_NOISE_TRIANGLE = 0x09;
 const WAVEFORM_PULSE_BIT = 0x04;
 const WAVEFORM_SAWTOOTH_BIT = 0x02;
 const WAVEFORM_TRIANGLE_SAW_MASK = 0x03;
@@ -359,6 +360,11 @@ export class SidOscillator {
     nextWaveform: number,
   ): boolean {
     if (previousWaveform <= WAVEFORM_NOISE_BIT) return false;
+    // TEST 期间的噪声+三角形选择不会在直接退回纯噪声时把组合输出预写回 LFSR；
+    // 下降沿本身仍完成移位。若在这里先回写，下一次可见噪声会错误地丢失多个抽头位。
+    if (previousWaveform === WAVEFORM_NOISE_TRIANGLE && nextWaveform === WAVEFORM_NOISE_BIT) {
+      return false;
+    }
     if (previousWaveform === WAVEFORM_NOISE_PULSE_MASK) {
       if (this.model === SID_MODEL.mos6581) return false;
       if (nextWaveform !== 0x09 && nextWaveform !== 0x0e) return false;
