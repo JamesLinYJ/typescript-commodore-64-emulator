@@ -839,7 +839,7 @@ function runTypeScriptFilter(scenarios: readonly FilterScenario[]): number[] {
       switch (command.kind) {
         case 'clock':
           for (let cycle = 0; cycle < command.cycles; cycle += 1) {
-            filter.clock(voices);
+            filter.clock(voices[0], voices[1], voices[2]);
             output.push(filter.outputPcm);
           }
           break;

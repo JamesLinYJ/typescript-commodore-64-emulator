@@ -8,7 +8,9 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+
+import { describe, expect, it, vi } from 'vitest';
 
 import { C64KeyboardMatrix } from '../../src/devices/C64KeyboardMatrix';
 import {
@@ -21,7 +23,10 @@ import {
   C64ControlPorts,
 } from '../../src/peripherals/control/C64ControlPorts';
 
-function createInput(joystickPort: 1 | 2 | null = 2): {
+function createInput(
+  joystickPort: 1 | 2 | null = 2,
+  target: EventTarget = new EventTarget(),
+): {
   readonly controlPorts: C64ControlPorts;
   readonly input: BrowserC64Input;
   readonly keyboard: C64KeyboardMatrix;
@@ -37,7 +42,6 @@ function createInput(joystickPort: 1 | 2 | null = 2): {
     keyboard,
     restoreKeyInput: restore,
   });
-  const target = new EventTarget();
   input.attach(target);
   return { controlPorts, input, keyboard, restore, target };
 }
@@ -141,6 +145,63 @@ describe('BrowserC64Input', () => {
     expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
     expect(controlPorts.port1.deviceAttached).toBe(true);
     expect(controlPorts.port1.deviceSignals.groundedDigitalLines).toBe(0);
+    input.dispose();
+  });
+
+  it('releases keyboard, joystick and RESTORE bindings when the screen loses focus', () => {
+    const screen = document.createElement('div');
+    const { controlPorts, input, keyboard, restore, target } = createInput(2, screen);
+    target.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyA' }));
+    target.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp' }));
+    target.dispatchEvent(new KeyboardEvent('keydown', { code: 'PageUp' }));
+    restore.tick(RESTORE_NMI_PULSE_CYCLES);
+
+    expect(scanPortB(keyboard, 0xfd)).toBe(0xfb);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(
+      C64_CONTROL_PORT_DIGITAL_LINE.up,
+    );
+
+    target.dispatchEvent(new FocusEvent('blur'));
+
+    expect(scanPortB(keyboard, 0xfd)).toBe(0xff);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
+    target.dispatchEvent(new KeyboardEvent('keydown', { code: 'PageUp' }));
+    expect(restore.nmiAsserted).toBe(true);
+    input.dispose();
+  });
+
+  it('releases active host bindings when the containing window loses focus', () => {
+    const screen = document.createElement('div');
+    const { controlPorts, input, keyboard, target } = createInput(2, screen);
+    target.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyA' }));
+    target.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowLeft' }));
+
+    window.dispatchEvent(new FocusEvent('blur'));
+
+    expect(scanPortB(keyboard, 0xfd)).toBe(0xff);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
+    input.dispose();
+  });
+
+  it('releases active host bindings only when the document becomes hidden', () => {
+    const visibilityState = vi.spyOn(document, 'visibilityState', 'get');
+    const { controlPorts, input, keyboard, target } = createInput(2, document);
+    target.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyA' }));
+    target.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight' }));
+
+    visibilityState.mockReturnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(scanPortB(keyboard, 0xfd)).toBe(0xfb);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(
+      C64_CONTROL_PORT_DIGITAL_LINE.right,
+    );
+
+    visibilityState.mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(scanPortB(keyboard, 0xfd)).toBe(0xff);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
+
+    visibilityState.mockRestore();
     input.dispose();
   });
 });

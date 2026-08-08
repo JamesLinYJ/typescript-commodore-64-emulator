@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 
-import { C64Emulator } from '../core/C64Emulator';
+import type { C64Emulator } from '../core/C64Emulator';
 import type { BundledProgramDescriptor } from '../media/BundledProgramCatalog';
 import { hex } from '../shared/numbers';
+import { PAL_VIDEO_STANDARD } from '../video/palVideoStandard';
 
 export type EmulatorPhase = 'error' | 'loading' | 'paused' | 'running';
 export type MessageTone = 'error' | 'normal';
@@ -12,8 +13,11 @@ interface EmulatorViewState {
   readonly framesPerSecond: number | undefined;
   readonly message: string;
   readonly messageTone: MessageTone;
+  readonly overBudgetFrames: number;
   readonly phase: EmulatorPhase;
   readonly programCounter: string;
+  readonly renderP95Ms: number | undefined;
+  readonly sampledFrames: number;
 }
 
 export interface C64EmulatorController extends EmulatorViewState {
@@ -27,6 +31,8 @@ export interface C64EmulatorController extends EmulatorViewState {
 
 const INITIAL_MESSAGE = '模拟器初始化中。屏幕就绪后可选择内置程序，或载入本地 PRG。';
 const READY_MESSAGE = 'BASIC 已就绪。选择程序后点击“载入”，或直接拖入 PRG 文件。';
+const FRAME_SAMPLE_LIMIT = 120;
+const PAL_FRAME_BUDGET_MS = 1000 / PAL_VIDEO_STANDARD.timing.refreshRateHz;
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -50,6 +56,9 @@ export function useC64Emulator(
   const [bootComplete, setBootComplete] = useState(false);
   const [message, setMessage] = useState(INITIAL_MESSAGE);
   const [messageTone, setMessageTone] = useState<MessageTone>('normal');
+  const [renderP95Ms, setRenderP95Ms] = useState<number>();
+  const [overBudgetFrames, setOverBudgetFrames] = useState(0);
+  const [sampledFrames, setSampledFrames] = useState(0);
 
   const showMessage = useCallback((nextMessage: string): void => {
     setMessage(nextMessage);
@@ -80,10 +89,12 @@ export function useC64Emulator(
     let emulator: C64Emulator | null = null;
     let framesSinceUpdate = 0;
     let lastFrameUpdate = performance.now();
+    const renderTimes: number[] = [];
     bootCompleteRef.current = false;
 
     const initialize = async (): Promise<void> => {
       try {
+        const { C64Emulator } = await import('../core/C64Emulator');
         const base = import.meta.env.BASE_URL;
         emulator = await C64Emulator.create({
           canvas,
@@ -106,16 +117,27 @@ export function useC64Emulator(
           if (nextState === 'running') {
             framesSinceUpdate = 0;
             lastFrameUpdate = performance.now();
+            setFramesPerSecond(undefined);
           }
           setPhase(nextState);
         });
-        emulator.on('frame', () => {
+        emulator.on('frame', ({ renderTime }) => {
+          renderTimes.push(renderTime);
+          if (renderTimes.length > FRAME_SAMPLE_LIMIT) renderTimes.shift();
+
           if (emulator?.state === 'running') {
             framesSinceUpdate += 1;
             const now = performance.now();
             const elapsed = now - lastFrameUpdate;
             if (elapsed >= 500) {
+              const sortedRenderTimes = [...renderTimes].sort((left, right) => left - right);
+              const p95Index = Math.max(0, Math.ceil(sortedRenderTimes.length * 0.95) - 1);
               setFramesPerSecond(Math.round((framesSinceUpdate * 1000) / elapsed));
+              setRenderP95Ms(sortedRenderTimes[p95Index]);
+              setOverBudgetFrames(
+                renderTimes.filter((renderTimeMs) => renderTimeMs > PAL_FRAME_BUDGET_MS).length,
+              );
+              setSampledFrames(renderTimes.length);
               setProgramCounter(hex(emulator.registers.programCounter, 4));
               framesSinceUpdate = 0;
               lastFrameUpdate = now;
@@ -190,19 +212,27 @@ export function useC64Emulator(
       }
 
       programRequestRef.current?.abort();
+      const request = new AbortController();
+      programRequestRef.current = request;
       const operationId = ++operationIdRef.current;
       showMessage(`正在读取 ${file.name}…`);
 
       try {
         const bytes = await file.arrayBuffer();
-        if (operationIdRef.current !== operationId || emulatorRef.current !== emulator) {
+        if (
+          request.signal.aborted ||
+          operationIdRef.current !== operationId ||
+          emulatorRef.current !== emulator
+        ) {
           return false;
         }
-        emulator.loadProgramBytes(bytes);
+        await emulator.loadProgramBytesAsync(bytes, {}, request.signal);
         return true;
       } catch (error: unknown) {
-        showOperationError(error);
+        if (!isAbortError(error)) showOperationError(error);
         return false;
+      } finally {
+        if (programRequestRef.current === request) programRequestRef.current = null;
       }
     },
     [showMessage, showOperationError],
@@ -240,9 +270,12 @@ export function useC64Emulator(
     loadLocalProgram,
     message,
     messageTone,
+    overBudgetFrames,
     phase,
     programCounter,
+    renderP95Ms,
     reset,
+    sampledFrames,
     stepFrame,
     toggle,
   };

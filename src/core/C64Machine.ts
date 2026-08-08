@@ -14,7 +14,7 @@ import { CpuBusCycleInvariantError } from './cpu/CpuBusCycleInvariantError';
 import type { Cpu6502 } from './cpu/Cpu6502';
 import { CpuIrqLine } from './cpu/CpuIrqLine';
 import { CpuNmiLine } from './cpu/CpuNmiLine';
-import type { C64Memory, CpuBusAccessKind } from './memory/C64Memory';
+import type { C64Memory, CpuBusAccessKind, CpuBusCycleObserver } from './memory/C64Memory';
 
 const CPU_BOUNDARY_CLOCK_OFFSET = 1;
 
@@ -28,6 +28,15 @@ export class C64Machine {
   private readonly nmiLine = new CpuNmiLine();
   private cycleCount = 0;
   private observedBusCycles = 0;
+  // CPU 每秒会执行数十万条指令；复用观察器可以避免在每条指令边界创建对象和两个闭包。
+  private readonly cpuBusCycleObserver: CpuBusCycleObserver = {
+    completeCpuBusCycle: () => this.synchronizeInterruptInputs(),
+    startCpuBusCycle: (kind, address) => {
+      this.advanceCpuBusCycle(kind);
+      this.observedBusCycles += 1;
+      this.assertCpuBusOwnership(kind, address);
+    },
+  };
 
   constructor(
     readonly cpu: Cpu6502,
@@ -42,14 +51,7 @@ export class C64Machine {
   executeInstruction(checkBreakpoints = false): number {
     const operationStartCycle = this.cycleCount;
     this.observedBusCycles = 0;
-    const previousObserver = this.memory.setCpuBusCycleObserver({
-      completeCpuBusCycle: () => this.synchronizeInterruptInputs(),
-      startCpuBusCycle: (kind, address) => {
-        this.advanceCpuBusCycle(kind);
-        this.observedBusCycles += 1;
-        this.assertCpuBusOwnership(kind, address);
-      },
-    });
+    const previousObserver = this.memory.setCpuBusCycleObserver(this.cpuBusCycleObserver);
 
     try {
       const interruptCycles = this.servicePendingInterrupt();
@@ -64,6 +66,22 @@ export class C64Machine {
     } catch (error: unknown) {
       if (error instanceof BreakpointError) this.completeCpuOperation(error.cyclesConsumed);
       throw error;
+    } finally {
+      this.memory.setCpuBusCycleObserver(previousObserver);
+    }
+  }
+
+  /** 让 CPU 的七周期 /RESET 序列通过正常总线仲裁推进整机硬件。 */
+  resetCpu(): number {
+    const operationStartCycle = this.cycleCount;
+    this.observedBusCycles = 0;
+    this.irqLine.reset();
+    this.nmiLine.reset();
+    const previousObserver = this.memory.setCpuBusCycleObserver(this.cpuBusCycleObserver);
+    try {
+      const cycles = this.cpu.reset();
+      this.completeCpuOperation(cycles);
+      return this.cycleCount - operationStartCycle;
     } finally {
       this.memory.setCpuBusCycleObserver(previousObserver);
     }

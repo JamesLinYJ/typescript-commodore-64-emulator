@@ -152,6 +152,7 @@ export function encodeD64SectorToGcr(
   if (sectorData.length !== 0x0100) {
     throw new RangeError(`D64 GCR sectors require 256 bytes; received ${sectorData.length}.`);
   }
+  requireGcrRepresentableD64ErrorCode(errorCode);
   const speedZone = d64SpeedZoneForTrack(header.track);
   const dataGapSize = D64_GCR_LAYOUT.dataGapBySpeedZone[speedZone];
   const output = new Uint8Array(
@@ -207,6 +208,37 @@ export function encodeD64SectorToGcr(
     throw new Error(`D64 GCR sector assembly wrote ${offset} of ${output.length} bytes.`);
   }
   return output;
+}
+
+function requireGcrRepresentableD64ErrorCode(errorCode: D64ErrorCode): void {
+  // D64 错误表也记录已丢失物理成因的控制器结果；不可把它们臆造成某种磁道损伤或正常数据。
+  switch (errorCode) {
+    case D64_ERROR_CODE.ok:
+    case D64_ERROR_CODE.headerNotFound:
+    case D64_ERROR_CODE.syncNotFound:
+    case D64_ERROR_CODE.dataBlockNotFound:
+    case D64_ERROR_CODE.dataChecksum:
+    case D64_ERROR_CODE.headerChecksum:
+    case D64_ERROR_CODE.diskIdMismatch:
+      return;
+
+    case D64_ERROR_CODE.verify:
+    case D64_ERROR_CODE.writeProtected:
+    case D64_ERROR_CODE.dataBlockLength:
+    case D64_ERROR_CODE.formatSpeed:
+    case D64_ERROR_CODE.drive:
+    case D64_ERROR_CODE.decode:
+      throw new RangeError(
+        `D64 error code ${errorCode} does not define a unique passive GCR-sector representation.`,
+      );
+
+    default:
+      return assertNeverD64ErrorCode(errorCode);
+  }
+}
+
+function assertNeverD64ErrorCode(errorCode: never): never {
+  throw new RangeError(`Unsupported D64 error code ${String(errorCode)}.`);
 }
 
 export function buildD64GcrTrack(image: D64DiskImage, track: number): D64GcrTrack {

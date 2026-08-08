@@ -17,7 +17,6 @@ interface CiaSerialReferenceCase {
 }
 
 const MAXIMUM_PARALLEL_REFERENCES = 4;
-const TSX_CLI_PATH = fileURLToPath(import.meta.resolve('tsx/cli'));
 const CIA_REFERENCE_TOOL_PATH = fileURLToPath(new URL('./verifyCiaReference.ts', import.meta.url));
 
 const REFERENCE_CASES: readonly CiaSerialReferenceCase[] = [
@@ -43,7 +42,7 @@ function runReference(reference: CiaSerialReferenceCase): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(
       process.execPath,
-      [TSX_CLI_PATH, CIA_REFERENCE_TOOL_PATH, ...reference.arguments],
+      ['--import', 'tsx', CIA_REFERENCE_TOOL_PATH, ...reference.arguments],
       { stdio: 'inherit' },
     );
     child.once('error', rejectPromise);

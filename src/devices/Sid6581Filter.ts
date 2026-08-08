@@ -15,12 +15,6 @@ import {
 } from './Sid6581FilterModel';
 import { SID_FILTER_BIT, SID_MASK } from './sidRegisters';
 
-const SID_FILTER_INPUT_BITS = [
-  SID_FILTER_BIT.voice1,
-  SID_FILTER_BIT.voice2,
-  SID_FILTER_BIT.voice3,
-] as const;
-
 /**
  * MOS 6581 的两个积分器环、共振反馈、模拟求和器与输出增益级。
  *
@@ -54,39 +48,43 @@ export class Sid6581Filter {
   }
 
   clock(
-    voices: readonly [number, number, number],
+    voice1: number,
+    voice2: number,
+    voice3: number,
     cutoff: number,
     resonanceRouting: number,
     modeVolume: number,
     externalInput?: number,
   ): number {
     this.updateCutoff(cutoff);
-    const voiceVoltages: [number, number, number] = [
-      this.model.scaleVoice(voices[0]),
-      this.model.scaleVoice(voices[1]),
-      this.model.scaleVoice(voices[2]),
-    ];
+    const voice1Voltage = this.model.scaleVoice(voice1);
+    const voice2Voltage = this.model.scaleVoice(voice2);
+    const voice3Voltage = this.model.scaleVoice(voice3);
     let filterInputCount = 0;
     let filterInputVoltage = 0;
     let mixerInputCount = 0;
     let mixerInputVoltage = 0;
 
-    for (let voice = 0; voice < voiceVoltages.length; voice += 1) {
-      const voltage = voiceVoltages[voice];
-      const routingBit = SID_FILTER_INPUT_BITS[voice];
-      if (voltage === undefined || routingBit === undefined) {
-        throw new RangeError(`MOS 6581 voice index ${voice} is not initialized.`);
-      }
-      if ((resonanceRouting & routingBit) !== 0) {
-        filterInputCount += 1;
-        filterInputVoltage += voltage;
-        continue;
-      }
-      const voiceThreeMuted = voice === 2 && (modeVolume & SID_FILTER_BIT.muteVoice3) !== 0;
-      if (!voiceThreeMuted) {
-        mixerInputCount += 1;
-        mixerInputVoltage += voltage;
-      }
+    if ((resonanceRouting & SID_FILTER_BIT.voice1) !== 0) {
+      filterInputCount += 1;
+      filterInputVoltage += voice1Voltage;
+    } else {
+      mixerInputCount += 1;
+      mixerInputVoltage += voice1Voltage;
+    }
+    if ((resonanceRouting & SID_FILTER_BIT.voice2) !== 0) {
+      filterInputCount += 1;
+      filterInputVoltage += voice2Voltage;
+    } else {
+      mixerInputCount += 1;
+      mixerInputVoltage += voice2Voltage;
+    }
+    if ((resonanceRouting & SID_FILTER_BIT.voice3) !== 0) {
+      filterInputCount += 1;
+      filterInputVoltage += voice3Voltage;
+    } else if ((modeVolume & SID_FILTER_BIT.muteVoice3) === 0) {
+      mixerInputCount += 1;
+      mixerInputVoltage += voice3Voltage;
     }
 
     if (externalInput !== undefined) {

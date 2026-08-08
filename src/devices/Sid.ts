@@ -122,22 +122,26 @@ export class Sid extends IoDevice {
 
   tick(cycles: number): void {
     const elapsedCycles = Math.max(0, Math.trunc(cycles));
+    // 三个声部在 SID 生命周期内固定存在；热路径直接缓存引用，避免每个芯片周期反复
+    // 通过通用索引校验取声部，也让滤波器以标量传递样本而不创建短命三元数组。
+    const voice1 = this.voices[0];
+    const voice2 = this.voices[1];
+    const voice3 = this.voices[2];
     for (let cycle = 0; cycle < elapsedCycles; cycle += 1) {
-      for (let index = 0; index < SID_VOICE_COUNT; index += 1) {
-        const voice = this.voiceAt(index);
-        voice.clockEnvelope();
-      }
-      for (let index = 0; index < SID_VOICE_COUNT; index += 1) {
-        this.voiceAt(index).clockOscillator();
-      }
-      for (let index = 0; index < SID_VOICE_COUNT; index += 1) {
-        this.voiceAt(index).synchronizeOscillator();
-      }
-      for (let index = 0; index < SID_VOICE_COUNT; index += 1) {
-        this.voiceAt(index).updateWaveformOutput();
-      }
+      voice1.clockEnvelope();
+      voice2.clockEnvelope();
+      voice3.clockEnvelope();
+      voice1.clockOscillator();
+      voice2.clockOscillator();
+      voice3.clockOscillator();
+      voice1.synchronizeOscillator();
+      voice2.synchronizeOscillator();
+      voice3.synchronizeOscillator();
+      voice1.updateWaveformOutput();
+      voice2.updateWaveformOutput();
+      voice3.updateWaveformOutput();
 
-      const sample = this.resampler.push(this.clockAudioPath());
+      const sample = this.resampler.push(this.clockAudioPath(voice1, voice2, voice3));
       if (sample !== undefined) this.samples.push(sample);
       this.commitPendingWrite();
       if (this.busLatchCyclesRemaining > 0) this.busLatchCyclesRemaining -= 1;
@@ -250,12 +254,8 @@ export class Sid extends IoDevice {
     this.filter.modeVolume = this.registers[SID_REGISTER.filterModeVolume] ?? 0;
   }
 
-  private clockAudioPath(): number {
-    const voiceSamples: [number, number, number] = [0, 0, 0];
-    for (let index = 0; index < SID_VOICE_COUNT; index += 1) {
-      voiceSamples[index] = this.voiceAt(index).analogOutput;
-    }
-    this.filter.clock(voiceSamples);
+  private clockAudioPath(voice1: SidVoice, voice2: SidVoice, voice3: SidVoice): number {
+    this.filter.clock(voice1.analogOutput, voice2.analogOutput, voice3.analogOutput);
     return this.externalFilter.clock(this.filter.outputPcm) / 0x8000;
   }
 

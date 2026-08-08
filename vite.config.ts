@@ -9,7 +9,7 @@ export default defineConfig({
     sourcemap: true,
   },
   test: {
-    environment: 'jsdom',
+    environment: 'node',
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],

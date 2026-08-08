@@ -13,7 +13,7 @@ import { Cpu6502 } from '../../core/cpu/Cpu6502';
 import { CpuBusCycleInvariantError } from '../../core/cpu/CpuBusCycleInvariantError';
 import { CpuIrqLine } from '../../core/cpu/CpuIrqLine';
 import type { Drive1541Mechanism } from './Drive1541Mechanism';
-import type { Drive1541Memory } from './Drive1541Memory';
+import type { Drive1541BusCycleObserver, Drive1541Memory } from './Drive1541Memory';
 
 const DRIVE_CPU_BOUNDARY_CLOCK_OFFSET = 1;
 
@@ -23,6 +23,13 @@ export class Drive1541Machine {
   private cycleCount = 0;
   private observedBusCycles = 0;
   private readonly stopObservingByteReadyEdge: () => void;
+  private readonly cpuBusCycleObserver: Drive1541BusCycleObserver = {
+    completeCpuBusCycle: () => this.synchronizeInterruptInput(),
+    startCpuBusCycle: () => {
+      this.observedBusCycles += 1;
+      this.advanceHardware(1);
+    },
+  };
 
   constructor(
     readonly cpu: Cpu6502,
@@ -41,13 +48,7 @@ export class Drive1541Machine {
   executeInstruction(checkBreakpoints = false): number {
     const operationStartCycle = this.cycleCount;
     this.observedBusCycles = 0;
-    const previousObserver = this.memory.setCpuBusCycleObserver({
-      completeCpuBusCycle: () => this.synchronizeInterruptInput(),
-      startCpuBusCycle: () => {
-        this.observedBusCycles += 1;
-        this.advanceHardware(1);
-      },
-    });
+    const previousObserver = this.memory.setCpuBusCycleObserver(this.cpuBusCycleObserver);
 
     try {
       const interruptCycles = this.servicePendingInterrupt();
@@ -61,6 +62,21 @@ export class Drive1541Machine {
     } catch (error: unknown) {
       if (error instanceof BreakpointError) this.completeCpuOperation(error.cyclesConsumed);
       throw error;
+    } finally {
+      this.memory.setCpuBusCycleObserver(previousObserver);
+    }
+  }
+
+  /** 通过驱动器自己的 CPU 总线执行七周期 /RESET，并同步推进 VIA 与磁盘位流。 */
+  resetCpu(): number {
+    const operationStartCycle = this.cycleCount;
+    this.observedBusCycles = 0;
+    this.irqLine.reset();
+    const previousObserver = this.memory.setCpuBusCycleObserver(this.cpuBusCycleObserver);
+    try {
+      const cycles = this.cpu.reset();
+      this.completeCpuOperation(cycles);
+      return this.cycleCount - operationStartCycle;
     } finally {
       this.memory.setCpuBusCycleObserver(previousObserver);
     }

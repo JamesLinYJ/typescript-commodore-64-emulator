@@ -86,32 +86,31 @@ export class SidFilter {
   }
 
   /** 声部输入使用 SidVoice.analogOutput 的乘法 DAC 整数量纲。 */
-  clock(voices: readonly [number, number, number], externalInput?: number): number {
+  clock(voice1: number, voice2: number, voice3: number, externalInput?: number): number {
     this.outputPcmState =
       this.model === SID_MODEL.mos8580
-        ? this.clockMos8580(voices, externalInput)
-        : this.clockMos6581(voices, externalInput);
+        ? this.clockMos8580(voice1, voice2, voice3, externalInput)
+        : this.clockMos6581(voice1, voice2, voice3, externalInput);
     return this.output;
   }
 
   private clockMos8580(
-    voices: readonly [number, number, number],
+    voice1: number,
+    voice2: number,
+    voice3: number,
     externalInput: number | undefined,
   ): number {
-    const scaledVoices: [number, number, number] = [
-      scaleMos8580Voice(voices[0]),
-      scaleMos8580Voice(voices[1]),
-      scaleMos8580Voice(voices[2]),
-    ];
+    const scaledVoice1 = scaleMos8580Voice(voice1);
+    const scaledVoice2 = scaleMos8580Voice(voice2);
+    const scaledVoice3 = scaleMos8580Voice(voice3);
     let filteredInput = 0;
     let directOutput = 0;
-    for (let index = 0; index < scaledVoices.length; index += 1) {
-      const voice = scaledVoices[index] ?? 0;
-      const routed = (this.resonanceRouting & (1 << index)) !== 0;
-      const mutedVoice3 = index === 2 && (this.modeVolume & SID_FILTER_BIT.muteVoice3) !== 0;
-      if (routed) filteredInput += voice;
-      else if (!mutedVoice3) directOutput += voice;
-    }
+    if ((this.resonanceRouting & SID_FILTER_BIT.voice1) !== 0) filteredInput += scaledVoice1;
+    else directOutput += scaledVoice1;
+    if ((this.resonanceRouting & SID_FILTER_BIT.voice2) !== 0) filteredInput += scaledVoice2;
+    else directOutput += scaledVoice2;
+    if ((this.resonanceRouting & SID_FILTER_BIT.voice3) !== 0) filteredInput += scaledVoice3;
+    else if ((this.modeVolume & SID_FILTER_BIT.muteVoice3) === 0) directOutput += scaledVoice3;
     if (externalInput !== undefined) {
       const scaledExternalInput = Math.trunc(externalInput);
       if ((this.resonanceRouting & SID_FILTER_BIT.externalInput) !== 0) {
@@ -156,14 +155,18 @@ export class SidFilter {
   }
 
   private clockMos6581(
-    voices: readonly [number, number, number],
+    voice1: number,
+    voice2: number,
+    voice3: number,
     externalInput: number | undefined,
   ): number {
     if (this.mos6581Filter === undefined) {
       throw new Error('MOS 6581 filter state is missing from a MOS 6581 SID instance.');
     }
     return this.mos6581Filter.clock(
-      voices,
+      voice1,
+      voice2,
+      voice3,
       this.cutoff,
       this.resonanceRouting,
       this.modeVolume,

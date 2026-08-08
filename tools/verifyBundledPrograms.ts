@@ -92,9 +92,9 @@ function captureFrame(
   frameBuffer.clear(memory.vic.palette[0]);
   scheduler.runFrame((rasterLine) => {
     if (rasterLine < firstVisibleRaster || rasterLine >= lastVisibleRasterExclusive) return;
-    frameBuffer.writeRow(
-      rasterLine - firstVisibleRaster,
-      memory.vic.captureRasterLineState().pixels,
+    memory.vic.copyRasterLinePixelsTo(
+      frameBuffer.pixels,
+      (rasterLine - firstVisibleRaster) * frameBuffer.width,
     );
   });
 }

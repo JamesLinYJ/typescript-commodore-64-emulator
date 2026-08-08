@@ -37,4 +37,8 @@ export class PalFrameScheduler {
   resetTiming(): void {
     this.machine.resetTiming();
   }
+
+  resetCpu(): number {
+    return this.machine.resetCpu();
+  }
 }

@@ -134,7 +134,7 @@ async function verifyDesktop(page: Page): Promise<void> {
   await waitForBoot(page);
 
   await page.getByRole('heading', { name: 'Commodore 64' }).waitFor();
-  await page.getByRole('heading', { name: '程序' }).waitFor();
+  await page.getByRole('heading', { name: '快捷载入 PRG' }).waitFor();
   await page.getByRole('heading', { name: '运行控制' }).waitFor();
   await page.getByRole('heading', { name: '快捷键参考' }).waitFor();
 

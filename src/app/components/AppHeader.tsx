@@ -1,9 +1,11 @@
-import { Moon, Sun } from 'lucide-react';
+import { Maximize2, Minimize2, Moon, Sun } from 'lucide-react';
 
 import type { EmulatorPhase } from '../useC64Emulator';
 
 interface AppHeaderProps {
   readonly darkTheme: boolean;
+  readonly isFullscreen: boolean;
+  readonly onToggleFullscreen: () => void;
   readonly onToggleTheme: () => void;
   readonly phase: EmulatorPhase;
 }
@@ -15,35 +17,35 @@ const PHASE_LABELS: Readonly<Record<EmulatorPhase, string>> = {
   running: '运行中',
 };
 
-const NAVIGATION = [
-  { href: '#console', label: '控制台' },
-  { href: '#program-panel', label: '程序管理' },
-  { href: '#keyboard-panel', label: '键位设置' },
-  { href: '#runtime-panel', label: '系统设置' },
-  { href: '#keyboard-panel', label: '帮助' },
-] as const;
-
-export function AppHeader({ darkTheme, onToggleTheme, phase }: AppHeaderProps) {
+export function AppHeader({
+  darkTheme,
+  isFullscreen,
+  onToggleFullscreen,
+  onToggleTheme,
+  phase,
+}: AppHeaderProps) {
   return (
     <header className="app-header">
       <div className="app-header__inner">
         <a className="app-title" href="#console" aria-label="返回运行控制台">
-          运行控制台
+          <strong>RetroC64</strong>
+          <span>PAL · 周期级 TypeScript 模拟器</span>
         </a>
-
-        <nav className="primary-navigation" aria-label="主导航">
-          {NAVIGATION.map(({ href, label }, index) => (
-            <a key={label} className={index === 0 ? 'is-active' : undefined} href={href}>
-              {label}
-            </a>
-          ))}
-        </nav>
 
         <div className="header-actions">
           <span className={`global-status global-status--${phase}`} aria-live="polite">
             <span aria-hidden="true" />
             {PHASE_LABELS[phase]}
           </span>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={isFullscreen ? '退出全屏' : '全屏显示 C64'}
+            aria-pressed={isFullscreen}
+            onClick={onToggleFullscreen}
+          >
+            {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+          </button>
           <button
             className="icon-button"
             type="button"

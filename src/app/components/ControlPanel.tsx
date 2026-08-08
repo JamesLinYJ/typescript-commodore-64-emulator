@@ -1,31 +1,43 @@
-import { ChevronRight, Pause, Play, RotateCcw, Upload } from 'lucide-react';
+import { ChevronRight, Pause, Play, RotateCcw, StepForward, Upload } from 'lucide-react';
 import { useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 
 import { BUNDLED_PROGRAMS, type BundledProgramDescriptor } from '../../media/BundledProgramCatalog';
+import type { DisplayScale } from './EmulatorWorkspace';
 import type { EmulatorPhase } from '../useC64Emulator';
 
 interface ControlPanelProps {
+  readonly displayScale: DisplayScale;
   readonly isReady: boolean;
   readonly onLoadFile: (file: File) => Promise<void>;
   readonly onLoadProgram: (program: BundledProgramDescriptor) => Promise<void>;
   readonly onPause: () => void;
   readonly onReset: () => void;
   readonly onRun: () => void;
-  readonly onZoomChange: (zoom: number) => void;
+  readonly onScaleChange: (scale: DisplayScale) => void;
+  readonly onStepFrame: () => void;
   readonly phase: EmulatorPhase;
-  readonly zoom: number;
 }
 
+const DISPLAY_SCALE_OPTIONS: readonly {
+  readonly label: string;
+  readonly value: DisplayScale;
+}[] = [
+  { label: '适应', value: 'fit' },
+  { label: '1×', value: '1x' },
+  { label: '2×', value: '2x' },
+];
+
 export function ControlPanel({
+  displayScale,
   isReady,
   onLoadFile,
   onLoadProgram,
   onPause,
   onReset,
   onRun,
-  onZoomChange,
+  onScaleChange,
+  onStepFrame,
   phase,
-  zoom,
 }: ControlPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState('galaga.prg');
@@ -68,16 +80,12 @@ export function ControlPanel({
     if (file) void onLoadFile(file);
   };
 
-  const handleZoomChange = (event: ChangeEvent<HTMLInputElement>): void => {
-    onZoomChange(Number(event.target.value));
-  };
-
   return (
     <aside className="control-panel" aria-label="模拟器控制面板">
       <section id="program-panel" className="panel-card">
-        <h2>程序</h2>
+        <h2>快捷载入 PRG</h2>
         <label className="field-label" htmlFor="program-select">
-          选择 PRG 文件
+          选择内置程序
         </label>
         <div className="select-row">
           <select
@@ -153,13 +161,32 @@ export function ControlPanel({
             <RotateCcw aria-hidden="true" />
             重置
           </button>
+          <button
+            className="button button--transport"
+            type="button"
+            disabled={!isReady || phase !== 'paused'}
+            onClick={onStepFrame}
+          >
+            <StepForward aria-hidden="true" />
+            单帧
+          </button>
         </div>
-        <label className="zoom-control">
-          <span>
-            显示缩放 <output>{zoom.toFixed(1)}×</output>
-          </span>
-          <input type="range" min="1" max="2" value={zoom} step="0.1" onChange={handleZoomChange} />
-        </label>
+        <div className="scale-control">
+          <span>显示缩放</span>
+          <div className="scale-options" role="group" aria-label="显示缩放">
+            {DISPLAY_SCALE_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                className="scale-option"
+                type="button"
+                aria-pressed={displayScale === option.value}
+                onClick={() => onScaleChange(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section id="keyboard-panel" className="panel-card panel-card--keys">
