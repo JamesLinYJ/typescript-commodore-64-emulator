@@ -645,7 +645,10 @@ export class Mos6526 extends IoDevice {
 
     if (destination === this.timeOfDay) {
       if (register === CIA_REGISTER.timeOfDayHours) this.timeOfDayStopped = true;
-      if (register === CIA_REGISTER.timeOfDayTenths) this.timeOfDayStopped = false;
+      if (register === CIA_REGISTER.timeOfDayTenths) {
+        if (this.timeOfDayStopped) this.timeOfDayInputPulseCount = 0;
+        this.timeOfDayStopped = false;
+      }
     }
   }
 

@@ -230,6 +230,46 @@ describe('Mos6526', () => {
     expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x00);
   });
 
+  it('restarts a stopped TOD clock with a fresh internal input-divider phase', () => {
+    const cia = new Mos6526();
+    cia.write(CIA_REGISTER.timerAControl, CIA_TIMER_CONTROL_BIT.timeOfDay50Hz);
+    cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+    cia.tickTimeOfDayInput(3);
+    cia.write(CIA_REGISTER.timeOfDayTenths, 0x00);
+
+    cia.tickTimeOfDayInput(4);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x00);
+    cia.tickTimeOfDayInput(1);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x01);
+  });
+
+  it('keeps the internal TOD divider phase when tenths is written while running', () => {
+    const cia = new Mos6526();
+    cia.write(CIA_REGISTER.timerAControl, CIA_TIMER_CONTROL_BIT.timeOfDay50Hz);
+    cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+    cia.write(CIA_REGISTER.timeOfDayTenths, 0x00);
+    cia.tickTimeOfDayInput(3);
+
+    cia.write(CIA_REGISTER.timeOfDayTenths, 0x04);
+    cia.tickTimeOfDayInput(1);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x04);
+    cia.tickTimeOfDayInput(1);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x05);
+  });
+
+  it('keeps the external TOD input phase continuous across a stopped-clock restart', () => {
+    const cia = new Mos6526('TOD phase', {
+      timing: { processorClockHz: 10, timeOfDayInputHz: 2 },
+    });
+    cia.write(CIA_REGISTER.timerAControl, CIA_TIMER_CONTROL_BIT.timeOfDay50Hz);
+    cia.tick(3);
+    cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+    cia.write(CIA_REGISTER.timeOfDayTenths, 0x00);
+
+    cia.tick(22);
+    expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x01);
+  });
+
   it('keeps timer, interrupt, and TOD phase identical through the single-cycle fast path', () => {
     const timing = { processorClockHz: 10, timeOfDayInputHz: 2 } as const;
     const batched = new Mos6526('batched', { timing });

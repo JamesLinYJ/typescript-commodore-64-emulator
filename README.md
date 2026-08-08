@@ -51,6 +51,7 @@ npm run verify:drive:disk-change
 npm run verify:drive:hls
 npm run verify:cia:ports
 npm run verify:cia:irqnmi
+npm run verify:cia:tod
 npm run verify:vic
 npm run verify:vic:sprites
 npm run verify:prg-autostart
@@ -117,6 +118,12 @@ SO/SYNC 时序测量与上游两张预期表逐字节完全一致。
 `verify:cia:irqnmi` 会运行 VICE revision 46176 且 SHA-256 固定的
 `irqnmi-new.prg`，逐格核对 19×19 组 CIA1 IRQ 与 CIA2 NMI 相对时序。该矩阵会同时覆盖
 NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执行一条 handler 指令的迟到边沿。
+
+`verify:cia:tod` 会从干净 BASIC 启动 revision 46176 且 SHA-256 分别固定的
+`hzsync0.prg` 至 `hzsync5.prg`。六个程序连续采样 256 次 CIA2 TOD，分别验证停表后重启
+会复位内部 50/60 Hz 分频相位，而运行中写十分之一秒、秒、分钟或从 50 Hz 切到 60 Hz
+不会误复位；
+每项都必须写入 `$D7FF=$00`、保持绿色边框，并且全部屏幕采样落在真机允许的相邻帧值内。
 
 `verify:vic` 会验证 PAL 光栅 IRQ，并把光笔同步边框色、动态坏线、hires/multicolor
 精灵优先级以及 `$D017` 在第 54、57 周期切换时的五个完整画面分别与 VICE revision 46176 参考 PNG
