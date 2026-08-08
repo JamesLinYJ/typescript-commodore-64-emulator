@@ -112,6 +112,56 @@ describe('Mos6526', () => {
     expect(cia.read(CIA_REGISTER.portA)).toBe(0xf5);
   });
 
+  it('drives stopped timer outputs low only while PB6 and PB7 routing is enabled', () => {
+    const cia = new Mos6526();
+    cia.write(CIA_REGISTER.portB, 0xff);
+    cia.write(CIA_REGISTER.dataDirectionB, 0x00);
+
+    expect(cia.read(CIA_REGISTER.portB)).toBe(0xff);
+    cia.write(CIA_REGISTER.timerAControl, CIA_TIMER_CONTROL_BIT.portBOutput);
+    cia.write(CIA_REGISTER.timerBControl, CIA_TIMER_CONTROL_BIT.portBOutput);
+    expect(cia.read(CIA_REGISTER.portB)).toBe(0x3f);
+
+    cia.write(CIA_REGISTER.timerAControl, 0);
+    cia.write(CIA_REGISTER.timerBControl, 0);
+    expect(cia.read(CIA_REGISTER.portB)).toBe(0xff);
+  });
+
+  it('keeps positive timer pulses separate from the start-seeded toggle latch', () => {
+    const pulse = new Mos6526();
+    writeTimerA(pulse, 1);
+    pulse.write(
+      CIA_REGISTER.timerAControl,
+      CIA_TIMER_CONTROL_BIT.start |
+        CIA_TIMER_CONTROL_BIT.forceLoad |
+        CIA_TIMER_CONTROL_BIT.portBOutput,
+    );
+
+    expect(pulse.portBOutputPins & 0x40).toBe(0);
+    pulse.tick(3);
+    expect(pulse.portBOutputPins & 0x40).toBe(0);
+    pulse.tick(1);
+    expect(pulse.portBOutputPins & 0x40).toBe(0x40);
+    pulse.tick(1);
+    expect(pulse.portBOutputPins & 0x40).toBe(0);
+
+    const toggle = new Mos6526();
+    writeTimerA(toggle, 1);
+    toggle.write(
+      CIA_REGISTER.timerAControl,
+      CIA_TIMER_CONTROL_BIT.start |
+        CIA_TIMER_CONTROL_BIT.forceLoad |
+        CIA_TIMER_CONTROL_BIT.portBOutput |
+        CIA_TIMER_CONTROL_BIT.toggleOutput,
+    );
+
+    expect(toggle.portBOutputPins & 0x40).toBe(0x40);
+    toggle.tick(3);
+    expect(toggle.portBOutputPins & 0x40).toBe(0x40);
+    toggle.tick(1);
+    expect(toggle.portBOutputPins & 0x40).toBe(0);
+  });
+
   it('pulses the low-active PC output for one cycle after Port B access', () => {
     const cia = new Mos6526();
     expect(cia.portControlOutputHigh).toBe(true);

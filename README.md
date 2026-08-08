@@ -52,6 +52,7 @@ npm run verify:drive:hls
 npm run verify:cia:ports
 npm run verify:cia:irqnmi
 npm run verify:cia:icr-rmw
+npm run verify:cia:timer-output
 npm run verify:cia:tod
 npm run verify:vic
 npm run verify:vic:sprites
@@ -124,6 +125,11 @@ NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执�
 且 SHA-256 固定的 `dd0dtest.prg`。它覆盖 CPU 对 CIA2 ICR 的普通读、索引读和
 读改写访问，尤其验证旧芯片在 ICR 读后第二个写周期清除 mask 时，会撤销尚未到达 NMI
 引脚的中断，但不会错误清除已经锁存的源标志或已拉低的中断引脚。
+
+`verify:cia:timer-output` 会在两种 CIA 模型上运行 revision 46176 且 SHA-256 固定的
+`pb6pb7/main.prg`。程序把 Port B 配成输入，分别要求 PBON 开启时停止的 Timer A/B
+把 PB6/PB7 驱动为低电平、PBON 关闭后恢复为外部高电平；门禁同时核对 `$D7FF`、边框色
+以及屏幕中的 `$3F/$FF` 实际引脚采样。
 
 `verify:cia:tod` 会从干净 BASIC 启动 revision 46176 且 SHA-256 分别固定的
 `hzsync0.prg` 至 `hzsync6.prg`。七个程序连续采样 256 次 CIA2 TOD，分别验证停表后重启

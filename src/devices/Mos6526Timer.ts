@@ -39,24 +39,30 @@ export class Mos6526Timer {
   counter = 0xffff;
   inputMode: number = CIA_TIMER_B_INPUT_MODE.processorClock;
   latch = 0xffff;
-  outputHigh = true;
   toggleOutput = false;
 
   private state = 0;
-  private pulseActive = false;
+  // 单周期下溢脉冲与翻转触发器是两条独立信号；OUTMODE 只负责选择输出，
+  // 因而切换模式时不能用当前引脚电平反推或覆盖另一条信号的历史状态。
+  private underflowPulseActive = false;
+  private toggleStateHigh = false;
 
   get running(): boolean {
     return (this.state & TIMER_STATE.start) !== 0;
+  }
+
+  get outputHigh(): boolean {
+    return this.toggleOutput ? this.toggleStateHigh : this.underflowPulseActive;
   }
 
   reset(): void {
     this.counter = 0xffff;
     this.inputMode = CIA_TIMER_B_INPUT_MODE.processorClock;
     this.latch = 0xffff;
-    this.outputHigh = true;
     this.toggleOutput = false;
     this.state = 0;
-    this.pulseActive = false;
+    this.underflowPulseActive = false;
+    this.toggleStateHigh = false;
   }
 
   writeLatchLow(value: number): void {
@@ -74,10 +80,12 @@ export class Mos6526Timer {
   }
 
   writeControl(value: number, inputMode: number): void {
+    const wasRunning = this.running;
     this.inputMode = inputMode;
     this.toggleOutput = (value & CIA_TIMER_CONTROL_BIT.toggleOutput) !== 0;
     this.state &= ~CONTROL_STATE_MASK;
     if ((value & CIA_TIMER_CONTROL_BIT.start) !== 0) this.state |= TIMER_STATE.start;
+    if (!wasRunning && (this.state & TIMER_STATE.start) !== 0) this.toggleStateHigh = true;
     if ((value & CIA_TIMER_CONTROL_BIT.oneShot) !== 0) {
       this.state |= TIMER_STATE.oneShotControl;
     }
@@ -90,10 +98,7 @@ export class Mos6526Timer {
   }
 
   tickCycle(externalStep = false): boolean {
-    if (this.pulseActive) {
-      this.pulseActive = false;
-      this.outputHigh = true;
-    }
+    this.underflowPulseActive = false;
     if (externalStep && this.running) this.state |= TIMER_STATE.externalStep;
 
     if (this.counter !== 0 && (this.state & TIMER_STATE.countStage3) !== 0) {
@@ -142,11 +147,7 @@ export class Mos6526Timer {
   }
 
   private updateOutput(): void {
-    if (this.toggleOutput) {
-      this.outputHigh = !this.outputHigh;
-      return;
-    }
-    this.outputHigh = false;
-    this.pulseActive = true;
+    this.toggleStateHigh = !this.toggleStateHigh;
+    this.underflowPulseActive = true;
   }
 }
