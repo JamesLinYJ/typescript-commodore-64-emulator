@@ -123,8 +123,9 @@ export class VicPixelPipeline {
     // PAL 6569 的颜色寄存器先完成 CPU 可见锁存，最终边框多路器再经过一个 dot
     // 的输出级；这个标量跨八像素批次和光栅线保留，不延迟背景或碰撞状态。
     const borderColor = registers.borderColor >>> 0;
-    const delayedBorderColor = this.borderColorOutputDelay ?? borderColor;
-    this.borderColorOutputDelay = borderColor;
+    const latchedBorderColor = this.borderColorOutputDelay;
+    const delayedBorderColor = latchedBorderColor ?? borderColor;
+    if (latchedBorderColor !== borderColor) this.borderColorOutputDelay = borderColor;
 
     // 边框最终覆盖颜色，且没有活动精灵时也不可能产生碰撞。整周期边框因此可以按
     // 连续像素段直接写入，避免执行八次不具状态的图形解码。
