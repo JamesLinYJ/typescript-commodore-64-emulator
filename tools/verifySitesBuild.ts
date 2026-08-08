@@ -15,6 +15,7 @@ import { join, relative, resolve } from 'node:path';
 const CLIENT_DIRECTORY = resolve('dist/client');
 const DIST_DIRECTORY = resolve('dist');
 const PUBLIC_DIRECTORY = resolve('public');
+const PRODUCTION_ORIGIN = 'https://retro-c64-emulator.jameslinyj.chatgpt.site';
 const REQUIRED_FILES = [
   resolve('dist/server/index.js'),
   resolve('dist/client/index.html'),
@@ -69,8 +70,8 @@ async function main(): Promise<void> {
   }
 
   const indexHtml = await readFile(resolve('dist/client/index.html'), 'utf8');
-  if (!indexHtml.includes('__SITE_ORIGIN__/og.png')) {
-    throw new Error('Sites HTML is missing the request-origin social-card placeholder.');
+  if (!indexHtml.includes(`${PRODUCTION_ORIGIN}/og.png`) || indexHtml.includes('__SITE_ORIGIN__')) {
+    throw new Error('Sites HTML is missing the absolute production social-card URL.');
   }
 
   const workerConfiguration = JSON.parse(
@@ -84,7 +85,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `PASS Sites build: origin-aware Worker, hosting metadata, ${publicFiles.length} exact assets, 0 source maps.`,
+    `PASS Sites build: absolute metadata, hosting metadata, ${publicFiles.length} exact assets, 0 source maps.`,
   );
 }
 
