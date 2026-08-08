@@ -244,6 +244,30 @@ describe('Mos6526', () => {
     expect(cia.tick(1)).toBe(true);
   });
 
+  it('cancels an old-CIA interrupt still in flight during an ICR read-modify-write', () => {
+    const cia = new Mos6526('original', { model: MOS_6526_MODEL.original });
+    writeTimerA(cia, 1);
+    cia.write(
+      CIA_REGISTER.interruptControl,
+      CIA_INTERRUPT_BIT.setOrPending | CIA_INTERRUPT_BIT.timerA,
+    );
+    cia.write(
+      CIA_REGISTER.timerAControl,
+      CIA_TIMER_CONTROL_BIT.start | CIA_TIMER_CONTROL_BIT.forceLoad,
+    );
+
+    cia.tick(2);
+    const original = cia.read(CIA_REGISTER.interruptControl);
+    expect(original).toBe(0);
+    cia.tick(1);
+    cia.write(CIA_REGISTER.interruptControl, original);
+    cia.tick(1);
+    cia.write(CIA_REGISTER.interruptControl, original + 1);
+
+    expect(cia.tick(1)).toBe(false);
+    expect(cia.read(CIA_REGISTER.interruptControl)).toBe(CIA_INTERRUPT_BIT.timerA);
+  });
+
   it('advances the BCD 12-hour TOD clock and toggles PM at eleven fifty-nine', () => {
     const cia = new Mos6526();
     cia.write(CIA_REGISTER.timerAControl, CIA_TIMER_CONTROL_BIT.timeOfDay50Hz);

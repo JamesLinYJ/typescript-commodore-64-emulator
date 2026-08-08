@@ -45,6 +45,7 @@ const TOD_REGISTER_ORDER = [
 const INTERRUPT_PIPELINE = {
   acknowledgeStage1: 0x0001,
   acknowledgeStage0: 0x0002,
+  acknowledgeCancellationWindow: 0x0004,
   acknowledgeExpired: 0x0008,
   setDataBitStage1: 0x0010,
   setDataBitStage0: 0x0020,
@@ -539,6 +540,15 @@ export class Mos6526 extends IoDevice {
         this.interruptPipeline |=
           INTERRUPT_PIPELINE.raiseStage1 | INTERRUPT_PIPELINE.setDataBitStage1;
       }
+    } else if (
+      this.model === MOS_6526_MODEL.original &&
+      (this.interruptPipeline & INTERRUPT_PIPELINE.acknowledgeCancellationWindow) !== 0
+    ) {
+      // 旧芯片在 ICR 读后的第二个写周期仍允许屏蔽位撤销尚未到达引脚的中断。
+      // 这正是 6502 读改写指令的最终写周期；已经拉低的引脚绝不能由此恢复。
+      this.interruptPipeline &= ~(
+        INTERRUPT_PIPELINE.raiseStage0 | INTERRUPT_PIPELINE.setDataBitStage0
+      );
     }
   }
 
