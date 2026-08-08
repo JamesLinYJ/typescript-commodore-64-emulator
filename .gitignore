@@ -9,5 +9,4 @@ output/
 *.tsbuildinfo
 .DS_Store
 .vite/
-.wrangler/
 .playwright-cli/
