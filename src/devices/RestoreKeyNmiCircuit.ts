@@ -39,6 +39,11 @@ export class RestoreKeyNmiCircuit implements RestoreKeyInput {
     this.pulseCyclesRemaining = Math.max(0, this.pulseCyclesRemaining - elapsedCycles);
   }
 
+  /** 推进一个主时钟周期，供整机热路径跳过批量参数规范化。 */
+  clockCycle(): void {
+    if (this.pulseCyclesRemaining > 0) this.pulseCyclesRemaining -= 1;
+  }
+
   reset(): void {
     this.keyPressed = false;
     this.pulseCyclesRemaining = 0;

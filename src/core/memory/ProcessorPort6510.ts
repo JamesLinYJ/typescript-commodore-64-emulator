@@ -122,6 +122,18 @@ export class ProcessorPort6510 {
     }
   }
 
+  /** 推进一个处理器周期，供整机热路径跳过批量参数规范化。 */
+  clockCycle(): void {
+    if (this.bit6FallOffRemaining > 0) {
+      this.bit6FallOffRemaining -= 1;
+      if (this.bit6FallOffRemaining === 0) this.floatingPinCharge &= ~0x40;
+    }
+    if (this.bit7FallOffRemaining > 0) {
+      this.bit7FallOffRemaining -= 1;
+      if (this.bit7FallOffRemaining === 0) this.floatingPinCharge &= ~0x80;
+    }
+  }
+
   private chargeFloatingPins(mask: number, value: number): void {
     if ((mask & 0x40) !== 0) {
       this.floatingPinCharge = (this.floatingPinCharge & ~0x40) | (value & 0x40);

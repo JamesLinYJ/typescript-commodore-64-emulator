@@ -155,4 +155,61 @@ describe('Commodore1530Datasette', () => {
     port.setHostSignals({ motorActive: true, writeHigh: true });
     expect(writable.pulses.map(({ sourceCycles }) => sourceCycles)).toEqual([8, 24]);
   });
+
+  it('keeps single-cycle playback exactly equivalent to tick(1)', () => {
+    const batchedPort = new C64TapePort();
+    const singleCyclePort = new C64TapePort();
+    const batched = new Commodore1530Datasette(batchedPort);
+    const singleCycle = new Commodore1530Datasette(singleCyclePort);
+    batched.insertTape(parseTapImage(createTap([2, 3, 1])));
+    singleCycle.insertTape(parseTapImage(createTap([2, 3, 1])));
+    const batchedPulses: number[] = [];
+    const singleCyclePulses: number[] = [];
+    batchedPort.observeReadPulses(({ sequence }) => batchedPulses.push(sequence));
+    singleCyclePort.observeReadPulses(({ sequence }) => singleCyclePulses.push(sequence));
+    for (const datasette of [batched, singleCycle]) datasette.pressPlay();
+    for (const port of [batchedPort, singleCyclePort]) {
+      port.setHostSignals({ motorActive: true, writeHigh: true });
+    }
+
+    for (let cycle = 0; cycle < 64; cycle += 1) {
+      batched.tick(1);
+      singleCycle.clockCycle();
+      expect(singleCycle.pulseIndex).toBe(batched.pulseIndex);
+      expect(singleCycle.elapsedTargetCycles).toBe(batched.elapsedTargetCycles);
+      expect(singleCycle.transport).toBe(batched.transport);
+      expect(singleCyclePort.senseSwitchClosed).toBe(batchedPort.senseSwitchClosed);
+      expect(singleCyclePulses).toEqual(batchedPulses);
+    }
+  });
+
+  it('keeps single-cycle recording exactly equivalent to tick(1)', () => {
+    const batchedPort = new C64TapePort();
+    const singleCyclePort = new C64TapePort();
+    const batchedImage = new WritableTapImage();
+    const singleCycleImage = new WritableTapImage();
+    const batched = new Commodore1530Datasette(batchedPort);
+    const singleCycle = new Commodore1530Datasette(singleCyclePort);
+    batched.insertTape(batchedImage);
+    singleCycle.insertTape(singleCycleImage);
+    batched.pressRecord();
+    singleCycle.pressRecord();
+    for (const port of [batchedPort, singleCyclePort]) {
+      port.setHostSignals({ motorActive: true, writeHigh: false });
+    }
+
+    for (let cycle = 1; cycle <= 40; cycle += 1) {
+      batched.tick(1);
+      singleCycle.clockCycle();
+      if (cycle === 9 || cycle === 25) {
+        batchedPort.setHostSignals({ motorActive: true, writeHigh: true });
+        singleCyclePort.setHostSignals({ motorActive: true, writeHigh: true });
+        batchedPort.setHostSignals({ motorActive: true, writeHigh: false });
+        singleCyclePort.setHostSignals({ motorActive: true, writeHigh: false });
+      }
+      expect(singleCycle.elapsedTargetCycles).toBe(batched.elapsedTargetCycles);
+      expect(singleCycle.pulseIndex).toBe(batched.pulseIndex);
+      expect(singleCycleImage.pulses).toEqual(batchedImage.pulses);
+    }
+  });
 });

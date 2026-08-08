@@ -56,4 +56,24 @@ describe('ProcessorPort6510', () => {
     port.setInputPins(0x07, 0x02);
     expect(port.bankingConfiguration).toBe(0x02);
   });
+
+  it('keeps the single-cycle hot path exactly equivalent to tick(1)', () => {
+    const batched = new ProcessorPort6510({ floatingPinFallOffCycles: 5 });
+    const singleCycle = new ProcessorPort6510({ floatingPinFallOffCycles: 5 });
+    for (const port of [batched, singleCycle]) {
+      port.writeDirection(0xc0);
+      port.writeData(0xc0);
+      port.writeDirection(0x00);
+      port.writeData(0x00);
+    }
+
+    for (let cycle = 0; cycle < 8; cycle += 1) {
+      batched.tick(1);
+      singleCycle.clockCycle();
+      expect(singleCycle.directionRegister).toBe(batched.directionRegister);
+      expect(singleCycle.outputLatch).toBe(batched.outputLatch);
+      expect(singleCycle.dataRegister).toBe(batched.dataRegister);
+      expect(singleCycle.bankingConfiguration).toBe(batched.bankingConfiguration);
+    }
+  });
 });

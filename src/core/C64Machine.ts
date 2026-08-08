@@ -175,9 +175,9 @@ export class C64Machine {
 
   private advanceHardwareCycle(cpuReadAddress?: number): void {
     this.cycleCount += 1;
-    this.memory.processorPort.tick(1);
-    this.memory.restoreKey.tick(1);
-    this.memory.datasette.tick(1);
+    this.memory.processorPort.clockCycle();
+    this.memory.restoreKey.clockCycle();
+    this.memory.datasette.clockCycle();
     this.memory.cartridge.tick(1);
     this.memory.cia1.clockCycle();
     this.memory.cia2.clockCycle();

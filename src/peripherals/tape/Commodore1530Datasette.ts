@@ -199,6 +199,40 @@ export class Commodore1530Datasette {
     }
   }
 
+  /** 推进一个主机周期，避免整机热路径重复验证固定的单周期参数。 */
+  clockCycle(): void {
+    const image = this.tape;
+    if (!image || !this.motorActive) return;
+
+    if (this.transportValue === DATASETTE_TRANSPORT.record) {
+      this.recordCyclesSinceEdge += 1;
+      this.elapsedTargetCyclesValue += 1;
+      if (
+        !Number.isSafeInteger(this.recordCyclesSinceEdge) ||
+        !Number.isSafeInteger(this.elapsedTargetCyclesValue)
+      ) {
+        throw new RangeError(
+          'Datasette recording duration exceeds exact JavaScript integer range.',
+        );
+      }
+      return;
+    }
+    if (this.transportValue !== DATASETTE_TRANSPORT.play) return;
+    if (this.pulseIndexValue >= image.pulses.length) {
+      this.stopTransport();
+      return;
+    }
+    if (this.pulseCyclesRemaining === 0) this.loadCurrentPulseDuration(image);
+
+    this.pulseCyclesRemaining -= 1;
+    this.elapsedTargetCyclesValue += 1;
+    if (this.pulseCyclesRemaining !== 0) return;
+
+    this.pulseIndexValue += 1;
+    this.devicePort.pulseRead();
+    if (this.pulseIndexValue >= image.pulses.length) this.stopTransport();
+  }
+
   disconnect(): void {
     this.requireConnected();
     this.stopTransport();

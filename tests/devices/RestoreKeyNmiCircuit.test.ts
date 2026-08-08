@@ -61,4 +61,17 @@ describe('RestoreKeyNmiCircuit', () => {
     circuit.setRestoreKeyPressed(true);
     expect(circuit.nmiAsserted).toBe(true);
   });
+
+  it('keeps the single-cycle hot path exactly equivalent to tick(1)', () => {
+    const batched = new RestoreKeyNmiCircuit();
+    const singleCycle = new RestoreKeyNmiCircuit();
+    batched.setRestoreKeyPressed(true);
+    singleCycle.setRestoreKeyPressed(true);
+
+    for (let cycle = 0; cycle < RESTORE_NMI_PULSE_CYCLES + 3; cycle += 1) {
+      batched.tick(1);
+      singleCycle.clockCycle();
+      expect(singleCycle.nmiAsserted).toBe(batched.nmiAsserted);
+    }
+  });
 });
