@@ -41,11 +41,6 @@ export interface SidOptions {
   readonly sampleRateHz?: number;
 }
 
-interface PendingSidWrite {
-  readonly index: number;
-  readonly value: number;
-}
-
 export class Sid extends IoDevice {
   readonly voices: readonly [SidVoice, SidVoice, SidVoice];
 
@@ -59,7 +54,6 @@ export class Sid extends IoDevice {
   private readonly samples = new Float32RingBuffer(SID_TIMING.sampleBufferCapacity);
   private busLatch = 0;
   private busLatchCyclesRemaining = 0;
-  private pendingWrite: PendingSidWrite | undefined;
   private paddleX = 0xff;
   private paddleY = 0xff;
 
@@ -115,7 +109,6 @@ export class Sid extends IoDevice {
     this.samples.clear();
     this.busLatch = 0;
     this.busLatchCyclesRemaining = 0;
-    this.pendingWrite = undefined;
     this.paddleX = 0xff;
     this.paddleY = 0xff;
   }
@@ -143,7 +136,6 @@ export class Sid extends IoDevice {
 
       const sample = this.resampler.push(this.clockAudioPath(voice1, voice2, voice3));
       if (sample !== undefined) this.samples.push(sample);
-      this.commitPendingWrite();
       if (this.busLatchCyclesRemaining > 0) this.busLatchCyclesRemaining -= 1;
     }
   }
@@ -184,15 +176,6 @@ export class Sid extends IoDevice {
 
   private writeSidRegister(index: number, value: number): void {
     this.latchBus(value);
-    if (this.model === SID_MODEL.mos8580) {
-      if (this.pendingWrite !== undefined) {
-        throw new Error(
-          `MOS 8580 write pipeline already contains register $${this.pendingWrite.index.toString(16).padStart(2, '0')}.`,
-        );
-      }
-      this.pendingWrite = { index, value: byte(value) };
-      return;
-    }
     this.applySidRegisterWrite(index, value);
   }
 
@@ -205,13 +188,6 @@ export class Sid extends IoDevice {
       return;
     }
     this.updateFilterRegisters();
-  }
-
-  private commitPendingWrite(): void {
-    const pending = this.pendingWrite;
-    if (pending === undefined) return;
-    this.pendingWrite = undefined;
-    this.applySidRegisterWrite(pending.index, pending.value);
   }
 
   private updateVoiceRegister(index: number): void {

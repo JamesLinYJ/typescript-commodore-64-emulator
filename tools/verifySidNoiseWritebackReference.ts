@@ -32,6 +32,18 @@ const test1 = {
   file: 'noise_writeback_test1-old.prg',
   sha256: '4f85095b30b9b32260d0e993d03ba67bcdb215ac9bbb9b26ab922638ba7f93dc',
 } as const;
+const test2Old = {
+  cache: 'output/reference/sid-noise-writeback-test2-old.prg',
+  directory: 'noisewriteback',
+  file: 'noise_writeback_test2-old.prg',
+  sha256: '9ee3ac86b997d65bbf7b6126a1ae336def638e754724fd9843320ef9b34d3b94',
+} as const;
+const test2New = {
+  cache: 'output/reference/sid-noise-writeback-test2-new.prg',
+  directory: 'noisewriteback',
+  file: 'noise_writeback_test2-new.prg',
+  sha256: '39429fd6fd47e436b40adadac2fd2b65baf5a9c0ae616ddb090fbb17aee86e9e',
+} as const;
 const matrix8 = {
   cache: 'output/reference/sid-noise-writeback-8-to-8.prg',
   directory: 'wb_testsuite',
@@ -47,6 +59,8 @@ const matrix9 = {
 const cases: readonly Case[] = [
   { expected: [0xfe, 0xfe], label: 'test1-old', model: SID_MODEL.mos6581, reference: test1 },
   { expected: [0xfe, 0xfe], label: 'test1-new', model: SID_MODEL.mos8580, reference: test1 },
+  { expected: [0x00, 0x14], label: 'test2-old', model: SID_MODEL.mos6581, reference: test2Old },
+  { expected: [0x00, 0x12], label: 'test2-new', model: SID_MODEL.mos8580, reference: test2New },
   { expected: MATRIX, label: '8-to-8-old', model: SID_MODEL.mos6581, reference: matrix8 },
   { expected: MATRIX, label: '8-to-8-new', model: SID_MODEL.mos8580, reference: matrix8 },
   { expected: MATRIX, label: '9-to-8-old', model: SID_MODEL.mos6581, reference: matrix9 },

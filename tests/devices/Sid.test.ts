@@ -78,21 +78,35 @@ describe('Sid', () => {
     expect(sid.read(SID_REGISTER.paddleY)).toBe(0x34);
   });
 
-  it('delays MOS 8580 register writes by one chip cycle', () => {
+  it('applies MOS 8580 register writes at the bus-write boundary', () => {
     const sid = new Sid(false, { model: SID_MODEL.mos8580 });
 
     sid.write(0x00, 0x34);
 
-    expect(sid.getVoice(0).frequency).toBe(0);
-    expect(sid.read(0x00)).toBe(0x34);
-    sid.tick(1);
     expect(sid.getVoice(0).frequency).toBe(0x34);
+    expect(sid.read(0x00)).toBe(0x34);
   });
 
-  it('rejects two unscheduled MOS 8580 writes in the same chip cycle', () => {
+  it('uses MOS 8580 writes on the next explicitly clocked chip cycle', () => {
+    const sid = new Sid(false, { model: SID_MODEL.mos8580 });
+
+    sid.write(0x00, 0xff);
+    sid.tick(1);
+    sid.write(0x01, 0xff);
+    sid.tick(1);
+    sid.write(0x04, SID_CONTROL_BIT.sawtooth);
+    sid.tick(1);
+
+    // C64Machine 会先推进当前总线周期再调用 write，因此每次写入都由下一个显式
+    // SID 时钟使用：从上电累加器 $555555 开始，先增加 $00ff，再增加两次 $ffff。
+    expect(sid.voices[0].waveform()).toBe(0x0575);
+  });
+
+  it('accepts consecutive MOS 8580 bus writes without a synthetic pipeline conflict', () => {
     const sid = new Sid(false, { model: SID_MODEL.mos8580 });
     sid.write(0x00, 0x34);
+    sid.write(0x01, 0x12);
 
-    expect(() => sid.write(0x01, 0x12)).toThrow(/write pipeline already contains/);
+    expect(sid.getVoice(0).frequency).toBe(0x1234);
   });
 });
