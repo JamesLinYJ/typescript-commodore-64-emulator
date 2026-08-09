@@ -52,6 +52,7 @@ npm run verify:drive:hls
 npm run verify:cia:ports
 npm run verify:cia:irqnmi
 npm run verify:cia:icr-rmw
+npm run verify:cia:timer-cascade
 npm run verify:cia:timer-output
 npm run verify:cia:tod
 npm run verify:vic
@@ -125,6 +126,11 @@ NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执�
 且 SHA-256 固定的 `dd0dtest.prg`。它覆盖 CPU 对 CIA2 ICR 的普通读、索引读和
 读改写访问，尤其验证旧芯片在 ICR 读后第二个写周期清除 mask 时，会撤销尚未到达 NMI
 引脚的中断，但不会错误清除已经锁存的源标志或已拉低的中断引脚。
+
+`verify:cia:timer-cascade` 会从干净 BASIC 启动固定 commit 与 SHA-256 的
+`cmp-b-counts-a-old.prg` 和 `cmp-b-counts-a-new.prg`，分别对照原版 6526 与修订版
+6526A/8521 真机采样。两项程序会穷举 Timer A 下溢驱动 Timer B 时 CPU 指令访问落在
+级联 STEP 前后的结果；门禁要求完整比较通过、写入 `$D7FF=$00` 并保持绿色边框。
 
 `verify:cia:timer-output` 会在两种 CIA 模型上运行 revision 46176 且 SHA-256 固定的
 `pb6pb7/main.prg`。程序把 Port B 配成输入，分别要求 PBON 开启时停止的 Timer A/B

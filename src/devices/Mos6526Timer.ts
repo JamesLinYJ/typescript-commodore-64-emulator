@@ -125,6 +125,12 @@ export class Mos6526Timer {
     return underflow;
   }
 
+  scheduleExternalStep(): void {
+    // 外部 STEP 在当前芯片周期结束时进入计数管线，不能反向作用于本周期已经完成的
+    // COUNT/LOAD 判定。Timer A 级联到 Timer B 也走同一条内部路径。
+    if (this.running) this.state |= TIMER_STATE.externalStep;
+  }
+
   private nextState(state: number): number {
     let next =
       state & (TIMER_STATE.start | TIMER_STATE.oneShotControl | TIMER_STATE.processorClockInput);

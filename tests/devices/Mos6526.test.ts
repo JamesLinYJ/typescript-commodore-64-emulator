@@ -214,7 +214,7 @@ describe('Mos6526', () => {
     expect(cia.read(CIA_REGISTER.timerALow)).toBe(1);
   });
 
-  it('can cascade Timer B from Timer A underflows', () => {
+  it('queues Timer A underflows into the following Timer B pipeline cycle', () => {
     const cia = new Mos6526();
     writeTimerA(cia, 1);
     writeTimerB(cia, 2);
@@ -228,6 +228,10 @@ describe('Mos6526', () => {
     );
 
     cia.tick(8);
+
+    expect(cia.read(CIA_REGISTER.timerBLow)).toBe(0);
+
+    cia.tick(1);
 
     expect(cia.read(CIA_REGISTER.interruptControl)).toBe(
       CIA_INTERRUPT_BIT.timerA | CIA_INTERRUPT_BIT.timerB,

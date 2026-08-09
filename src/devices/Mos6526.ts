@@ -611,7 +611,7 @@ export class Mos6526 extends IoDevice {
       this.timerB.inputMode === CIA_TIMER_B_INPUT_MODE.timerAUnderflow ||
       (this.timerB.inputMode === CIA_TIMER_B_INPUT_MODE.timerAUnderflowWhileCountHigh &&
         this.countPinHigh);
-    if (this.timerB.tickCycle(cascadeTimerB && timerAUnderflow)) {
+    if (this.timerB.tickCycle()) {
       this.synchronizeStoppedTimerStartBit(CIA_REGISTER.timerBControl, this.timerB.running);
       this.timerBReadCollision =
         this.model === MOS_6526_MODEL.original &&
@@ -620,6 +620,7 @@ export class Mos6526 extends IoDevice {
     } else {
       this.timerBReadCollision = false;
     }
+    if (cascadeTimerB && timerAUnderflow) this.timerB.scheduleExternalStep();
     this.runInterruptPipelineCycle();
     if (
       serialWorkPending &&
