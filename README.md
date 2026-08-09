@@ -41,6 +41,7 @@ p50/p95/p99 帧耗时、PAL 实时倍率和 SID 样本数；基准只衡量整�
 硬件外部参考门禁：
 
 ```bash
+npm run verify:cpu-rdy-store
 npm run verify:via
 npm run verify:cartridge
 npm run verify:easyflash
@@ -62,6 +63,13 @@ npm run verify:prg-autostart
 npm run verify:programs
 npm run verify:reference
 ```
+
+`verify:cpu-rdy-store` 会从固定 commit 下载并校验 SHA-256 固定的 `shxy2.prg` 与
+`shyx2.prg`，分别覆盖 SHX 和 SHY。每项程序都会从干净 BASIC 通过 `RUN`/`SYS 2062`
+启动一次，再从 `$080E` 直接启动一次；两条入口都必须写入 `$D7FF=$00`、保持绿色边框，
+并让 `$1080` 起的 24 字节与 6510、8500 真机结果逐字节完全一致。参考程序让精灵 DMA
+恰好在指令第三、第四周期之间拉住 BA/RDY；此时第四周期读会被延长，写入数据的
+`&(H+1)` 必须脱落，但跨页目标地址的高字节仍使用掩码后的值。
 
 `verify:via` 会以项目自己的 1541 CPU 总线逐周期重放 VICE 真机采样序列，核对 MOS 6522
 的 T1/PB7、T1/T2 与 IFR 行为；下载的固定版本参考数据会先校验 SHA-256，校验失败不会

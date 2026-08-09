@@ -39,6 +39,7 @@ interface CpuEvents {
 
 export type CpuInstructionObserver = (address: number, opcode: number) => void;
 export type CpuNmiTakeoverProbe = () => boolean;
+export type CpuReadWasHeldProbe = () => boolean;
 
 const NO_ADDRESSING_MODE: AddressingMode = () => 0;
 const CPU_BYTE_MAX = 0xff;
@@ -67,6 +68,11 @@ const enum CpuMemoryAccess {
   ReadModifyWrite,
 }
 
+const enum CpuUnstableStoreDataMaskMode {
+  Always,
+  DropAfterHeldRead,
+}
+
 const enum CpuCycleSequence {
   None,
   NonMaskableInterrupt,
@@ -87,6 +93,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   private readonly znTable: Uint8Array;
   private instructionObserver: CpuInstructionObserver | undefined;
   private nmiTakeoverProbe: CpuNmiTakeoverProbe | undefined;
+  private readWasHeldProbe: CpuReadWasHeldProbe | undefined;
   private jamBusCycleIndex = 0;
   private jammed = false;
   private memoryAccess = CpuMemoryAccess.Read;
@@ -103,6 +110,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   private cycleLow = 0;
   private cycleData = 0;
   private cyclePageCrossed = false;
+  private cycleIndexedStoreReadWasHeld = false;
   private cycleInterruptMaskedBefore = false;
   private cycleCheckBreakpoints = false;
   private cycleSequence = CpuCycleSequence.None;
@@ -151,6 +159,7 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
       return false;
     }
     if (this.cyclePhase === 0) {
+      this.cycleIndexedStoreReadWasHeld = false;
       const instructionAddress = this.pc;
       this.pc = word(this.pc + 1);
       this.cycleInterruptMaskedBefore = (this.p & CpuStatusFlag.InterruptDisable) !== 0;
@@ -466,6 +475,17 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
     return previous;
   }
 
+  /**
+   * 安装最近一次 CPU 读周期是否被 RDY 延长的探针。
+   *
+   * CPU 在需要该相位事实的虚读返回后立即采样；BA/AEC 的推进和仲裁仍由整机负责。
+   */
+  setReadWasHeldProbe(probe: CpuReadWasHeldProbe | undefined): CpuReadWasHeldProbe | undefined {
+    const previous = this.readWasHeldProbe;
+    this.readWasHeldProbe = probe;
+    return previous;
+  }
+
   getUseUndocumentedOpcodes() {
     return this.useUndocumentedOpcodes;
   }
@@ -570,6 +590,12 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
       (this.cycleMemoryAccess !== CycleMemoryAccess.READ || this.cyclePageCrossed)
     ) {
       this.memory.read(this.cycleProvisionalAddress);
+      if (
+        this.cycleOperation === CycleOperation.XAS ||
+        this.cycleOperation === CycleOperation.SAY
+      ) {
+        this.cycleIndexedStoreReadWasHeld = this.readWasHeldProbe?.() ?? false;
+      }
       this.cyclePhase = 4;
       return false;
     }
@@ -707,9 +733,15 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
       this.cycleOperation === CycleOperation.XAS ||
       this.cycleOperation === CycleOperation.SAY
     ) {
-      value &= ((this.cycleBaseAddress >>> CPU_PAGE_SHIFT) + 1) & CPU_BYTE_MAX;
+      const highByteMask = ((this.cycleBaseAddress >>> CPU_PAGE_SHIFT) + 1) & CPU_BYTE_MAX;
+      const addressHighValue = value & highByteMask;
+      const dataMaskDrops =
+        this.cycleIndexedStoreReadWasHeld &&
+        (this.cycleOperation === CycleOperation.XAS || this.cycleOperation === CycleOperation.SAY);
+      if (!dataMaskDrops) value = addressHighValue;
       if (((this.cycleBaseAddress ^ this.cycleAddress) & CPU_PAGE_SIZE) !== 0) {
-        writeAddress = (value << CPU_PAGE_SHIFT) | (this.cycleAddress & CPU_PAGE_OFFSET_MASK);
+        writeAddress =
+          (addressHighValue << CPU_PAGE_SHIFT) | (this.cycleAddress & CPU_PAGE_OFFSET_MASK);
       }
     }
     return (writeAddress << CPU_PAGE_SHIFT) | value;
@@ -1687,7 +1719,12 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   opXAS(addr: AddressingMode) {
     if (this.useUndocumentedOpcodes) {
-      this.writeUnstableIndexedStore(addr, this.y, this.x);
+      this.writeUnstableIndexedStore(
+        addr,
+        this.y,
+        this.x,
+        CpuUnstableStoreDataMaskMode.DropAfterHeldRead,
+      );
     } else {
       this.usedUndocumentedOpcode();
     }
@@ -1695,7 +1732,12 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
 
   opSAY(addr: AddressingMode) {
     if (this.useUndocumentedOpcodes) {
-      this.writeUnstableIndexedStore(addr, this.x, this.y);
+      this.writeUnstableIndexedStore(
+        addr,
+        this.x,
+        this.y,
+        CpuUnstableStoreDataMaskMode.DropAfterHeldRead,
+      );
     } else {
       this.usedUndocumentedOpcode();
     }
@@ -2165,21 +2207,27 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   /**
    * 执行 AHX/TAS/SHX/SHY 共用的 NMOS 不稳定变址写周期。
    *
-   * 写入值会与“变址前基址高字节 + 1”相与；发生跨页时，同一个值还会取代
-   * 地址总线高字节。显式重建基址可避免把这项芯片行为藏进普通寻址方式。
+   * 常态写入值会与“变址前基址高字节 + 1”相与；发生跨页时，该掩码值还会
+   * 取代地址总线高字节。SHX/SHY 的第四周期读被 RDY 延长时仅数据掩码脱落，
+   * 地址高字节仍保持相同规则。显式分离两条数据路径可避免固定延迟或地址特判。
    */
   private writeUnstableIndexedStore(
     addressingMode: AddressingMode,
     indexRegister: number,
     sourceValue: number,
+    dataMaskMode = CpuUnstableStoreDataMaskMode.Always,
   ): void {
     const indexedAddress = this.resolveAddress(addressingMode, CpuMemoryAccess.Write);
+    const readWasHeld =
+      dataMaskMode === CpuUnstableStoreDataMaskMode.DropAfterHeldRead &&
+      (this.readWasHeldProbe?.() ?? false);
     const baseAddress = word(indexedAddress - indexRegister);
     const highByteMask = ((baseAddress >>> CPU_PAGE_SHIFT) + 1) & CPU_BYTE_MAX;
-    const storedValue = sourceValue & highByteMask;
+    const addressHighValue = sourceValue & highByteMask;
+    const storedValue = readWasHeld ? sourceValue : addressHighValue;
     const pageCrossed = ((baseAddress ^ indexedAddress) & CPU_PAGE_SIZE) !== 0;
     const writeAddress = pageCrossed
-      ? (storedValue << CPU_PAGE_SHIFT) | (indexedAddress & CPU_PAGE_OFFSET_MASK)
+      ? (addressHighValue << CPU_PAGE_SHIFT) | (indexedAddress & CPU_PAGE_OFFSET_MASK)
       : indexedAddress;
     this.memory.write(writeAddress, storedValue);
   }

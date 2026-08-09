@@ -198,6 +198,49 @@ describe('C64Machine', () => {
     expect(memory.ram[0x0010]).toBe(0x00);
   });
 
+  it.each([
+    { indexX: 0x12, indexY: 0x02, mnemonic: 'SHX', opcode: 0x9e },
+    { indexX: 0x02, indexY: 0x12, mnemonic: 'SHY', opcode: 0x9c },
+  ])(
+    'drops the $mnemonic high-byte data mask only when sprite DMA holds its fourth cycle',
+    ({ indexX, indexY, opcode }) => {
+      const runAtRasterCycle = (
+        rasterCycle: number,
+      ): { cycles: number; unmaskedAddressValue: number; value: number } => {
+        const { cpu, memory } = createC64System();
+        memory.ram.set([opcode, 0xff, 0x10], 0x0200);
+        cpu.restoreRegisters({
+          ...cpu.getRegisters(),
+          indexX,
+          indexY,
+        });
+        memory.vic.write(7, 0x00); // 精灵 3 的 Y 坐标；其 DMA 在第 61 周期拉低 BA。
+        memory.vic.write(VIC_REGISTER.spriteEnable, 1 << 3);
+        const machine = new C64Machine(cpu, memory);
+        advanceVicTo(machine, 0, rasterCycle);
+
+        return {
+          cycles: machine.executeInstruction(),
+          unmaskedAddressValue: memory.ram[0x1201] ?? 0,
+          value: memory.ram[0x1001] ?? 0,
+        };
+      };
+
+      // 提前一周期时，第四周期在 BA 拉低前完成，随后写周期仍可越过 BA。
+      expect(runAtRasterCycle(56)).toEqual({
+        cycles: 5,
+        unmaskedAddressValue: 0x00,
+        value: 0x10,
+      });
+      // 晚一周期时仅数据不再与 H+1 相与；跨页地址高字节仍由掩码后的值驱动。
+      expect(runAtRasterCycle(57)).toEqual({
+        cycles: 10,
+        unmaskedAddressValue: 0x00,
+        value: 0x12,
+      });
+    },
+  );
+
   it('samples BA on the attempted read cycle before allowing consecutive interrupt writes', () => {
     const { cpu, firmware, memory } = createC64System();
     memory.ram[0x0200] = 0x00; // BRK：一次操作码读、一次伪读、三次连续压栈写和两次向量读。
