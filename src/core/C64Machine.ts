@@ -28,16 +28,18 @@ export class C64Machine {
   private readonly nmiLine = new CpuNmiLine();
   private cycleCount = 0;
   private observedBusCycles = 0;
+  private lastCpuReadWasHeld = false;
   // CPU 每秒会执行数十万条指令；复用观察器可以避免在每条指令边界创建对象和两个闭包。
   private readonly cpuBusCycleObserver: CpuBusCycleObserver = {
     completeCpuBusCycle: () => this.synchronizeInterruptInputs(),
     startCpuBusCycle: (kind, address) => {
-      this.advanceCpuBusCycle(kind, address);
+      this.lastCpuReadWasHeld = this.advanceCpuBusCycle(kind, address);
       this.observedBusCycles += 1;
       this.assertCpuBusOwnership(kind, address);
     },
   };
   private readonly cpuNmiTakeoverProbe = () => this.acknowledgeNmiTakeover();
+  private readonly cpuReadWasHeldProbe = () => this.lastCpuReadWasHeld;
 
   constructor(
     readonly cpu: Cpu6502,
@@ -45,6 +47,7 @@ export class C64Machine {
     private readonly clockedPeripherals: readonly C64ClockedPeripheral[] = [],
   ) {
     this.cpu.setNmiTakeoverProbe(this.cpuNmiTakeoverProbe);
+    this.cpu.setReadWasHeldProbe(this.cpuReadWasHeldProbe);
   }
 
   get elapsedCycles(): number {
@@ -54,6 +57,7 @@ export class C64Machine {
   executeInstruction(checkBreakpoints = false): number {
     const operationStartCycle = this.cycleCount;
     this.observedBusCycles = 0;
+    this.lastCpuReadWasHeld = false;
     const previousObserver = this.memory.setCpuBusCycleObserver(this.cpuBusCycleObserver);
 
     try {
@@ -78,6 +82,7 @@ export class C64Machine {
   resetCpu(): number {
     const operationStartCycle = this.cycleCount;
     this.observedBusCycles = 0;
+    this.lastCpuReadWasHeld = false;
     this.irqLine.reset();
     this.nmiLine.reset();
     const previousObserver = this.memory.setCpuBusCycleObserver(this.cpuBusCycleObserver);
@@ -103,6 +108,7 @@ export class C64Machine {
     this.irqLine.reset();
     this.nmiLine.reset();
     this.cycleCount = 0;
+    this.lastCpuReadWasHeld = false;
     for (const peripheral of this.clockedPeripherals) peripheral.resetClock();
   }
 
@@ -166,11 +172,19 @@ export class C64Machine {
     }
   }
 
-  private advanceCpuBusCycle(kind: CpuBusAccessKind, address: number): void {
+  private advanceCpuBusCycle(kind: CpuBusAccessKind, address: number): boolean {
     // BA 在当前 φ2 周期决定 6510 的读访问是否完成，所以必须先推进到被尝试的周期再采样。
     // 读周期会保持地址并重复到 BA 释放；写周期不响应 RDY，可在 AEC 拉低前的三周期预告窗内完成。
-    do this.advanceHardwareCycle(kind === 'read' ? address : undefined);
-    while (kind === 'read' && this.memory.vic.baLow);
+    if (kind === 'write') {
+      this.advanceHardwareCycle();
+      return false;
+    }
+
+    this.advanceHardwareCycle(address);
+    if (!this.memory.vic.baLow) return false;
+    do this.advanceHardwareCycle(address);
+    while (this.memory.vic.baLow);
+    return true;
   }
 
   private advanceHardwareCycle(cpuReadAddress?: number): void {

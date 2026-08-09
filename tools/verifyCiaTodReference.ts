@@ -15,12 +15,18 @@ import { dirname, resolve } from 'node:path';
 import { hasBasicReadyPrompt } from '../src/core/basicStartup';
 import { Cpu6502 } from '../src/core/cpu/Cpu6502';
 import { C64Memory, type C64Firmware } from '../src/core/memory/C64Memory';
+import { MOS_6526_MODEL, type Mos6526Model } from '../src/devices/Mos6526Model';
 import { installPrg, parsePrg, PRG_START_MODE } from '../src/media/PrgLoader';
 import { PalFrameScheduler } from '../src/video/PalFrameScheduler';
 
 const UPSTREAM_TEST_REVISION = 46_176;
+const INVALID_DIGIT_TEST_COMMIT = 'ef8e8efe52f3d43df7acefad132c6506239bddee';
 const REFERENCE_DIRECTORY =
   `https://sourceforge.net/p/vice-emu/code/${UPSTREAM_TEST_REVISION}/tree/` + 'testprogs/CIA/tod';
+const INVALID_DIGIT_REFERENCE_DIRECTORY =
+  `https://raw.githubusercontent.com/libsidplayfp/VICE-testprogs/${INVALID_DIGIT_TEST_COMMIT}/` +
+  'CIA/tod';
+const FIX_TSEC_ONLY_ARGUMENT = '--fix-tsec-only';
 const BASIC_BOOT_FRAME_LIMIT = 300;
 const RESULT_FRAME_LIMIT = 3_500;
 const PROGRAM_ENTRY_ADDRESS = 0x080d;
@@ -36,12 +42,13 @@ const SCREEN_SAMPLE_COUNT = 0x0100;
 interface CiaTodReference {
   readonly cachePath: string;
   readonly description: string;
-  readonly expectedScreenCodes: readonly number[];
+  readonly exhaustiveMatrix?: boolean;
+  readonly expectedScreenCodes: readonly number[] | undefined;
   readonly fileName: string;
   readonly sha256: string;
 }
 
-const CIA_TOD_REFERENCES = [
+const CIA_TOD_REFERENCES: readonly CiaTodReference[] = [
   {
     cachePath: resolve('output/reference/cia-tod-hzsync0.prg'),
     description: 'stopped-clock full TOD rewrite',
@@ -91,7 +98,18 @@ const CIA_TOD_REFERENCES = [
     fileName: 'hzsync6.prg',
     sha256: '39a5fb6c2fc930ee31c8f852be8c13e61d9521892db395ce112d4a1a3389f277',
   },
-] as const satisfies readonly CiaTodReference[];
+  {
+    cachePath: resolve('output/reference/cia-tod-fix-tsec.prg'),
+    description: 'independent invalid BCD digit increment',
+    exhaustiveMatrix: true,
+    expectedScreenCodes: undefined,
+    fileName: 'fix-tsec.prg',
+    sha256: '9d7c493003517b32135d1af56965dbc587eb68cbc3ddd029c78760bf241b64a3',
+  },
+];
+
+const START_MODES = [PRG_START_MODE.basicRun, PRG_START_MODE.direct] as const;
+const CIA_MODELS = [MOS_6526_MODEL.original, MOS_6526_MODEL.revised] as const;
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -143,7 +161,9 @@ async function loadReferenceProgram(reference: CiaTodReference): Promise<Uint8Ar
     return cached;
   }
 
-  const url = `${REFERENCE_DIRECTORY}/${reference.fileName}?format=raw`;
+  const url = reference.exhaustiveMatrix
+    ? `${INVALID_DIGIT_REFERENCE_DIRECTORY}/${reference.fileName}`
+    : `${REFERENCE_DIRECTORY}/${reference.fileName}?format=raw`;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Unable to download ${reference.fileName}: HTTP ${response.status}.`);
@@ -170,15 +190,18 @@ function formatScreenCode(code: number): string {
   return `$${code.toString(16).padStart(2, '0')}`;
 }
 
-function validateScreenSamples(memory: C64Memory, reference: CiaTodReference): string {
+function validateScreenSamples(memory: C64Memory, reference: CiaTodReference): string | undefined {
+  const expectedScreenCodes = reference.expectedScreenCodes;
+  if (!expectedScreenCodes) return undefined;
+
   const samples = memory.copyRam(SCREEN_ADDRESS, SCREEN_SAMPLE_COUNT);
   const counts = new Map<number, number>();
   for (const sample of samples) {
     counts.set(sample, (counts.get(sample) ?? 0) + 1);
-    if (!reference.expectedScreenCodes.includes(sample)) {
+    if (!expectedScreenCodes.includes(sample)) {
       throw new Error(
         `${reference.fileName} recorded unexpected screen sample ${formatScreenCode(sample)}; ` +
-          `expected only ${reference.expectedScreenCodes.map(formatScreenCode).join(' or ')}.`,
+          `expected only ${expectedScreenCodes.map(formatScreenCode).join(' or ')}.`,
       );
     }
   }
@@ -192,22 +215,26 @@ function runReference(
   firmware: C64Firmware,
   reference: CiaTodReference,
   program: Uint8Array,
+  startMode: (typeof START_MODES)[number],
+  model: Mos6526Model,
 ): {
   readonly bootFrames: number;
   readonly resultFrames: number;
-  readonly screenSummary: string;
+  readonly screenSummary: string | undefined;
 } {
-  const memory = new C64Memory(firmware);
+  const memory = new C64Memory(firmware, { ciaModels: { cia1: model, cia2: model } });
   const cpu = new Cpu6502(memory);
   const scheduler = new PalFrameScheduler(cpu, memory);
   const bootFrames = bootToBasicReady(scheduler, memory);
 
-  installPrg(parsePrg(program), memory, cpu, { startMode: PRG_START_MODE.none });
-  cpu.pc = PROGRAM_ENTRY_ADDRESS;
+  installPrg(parsePrg(program), memory, cpu, {
+    entryAddress: PROGRAM_ENTRY_ADDRESS,
+    startMode,
+  });
 
   let result: number | undefined;
   const stopObserving = memory.observeWrites(({ address, value }) => {
-    if (address === RESULT_ADDRESS) result = value;
+    if (address === RESULT_ADDRESS) result ??= value;
   });
 
   let resultFrames = 0;
@@ -221,25 +248,22 @@ function runReference(
     stopObserving();
   }
 
-  if (cpu.isJammed) {
-    throw new Error(`${reference.fileName} entered the 6510 JAM state.`);
-  }
+  const label = `${reference.fileName} ${startMode} ${model}`;
+  if (cpu.isJammed) throw new Error(`${label} entered the 6510 JAM state.`);
   if (result === undefined) {
-    throw new Error(
-      `${reference.fileName} did not write its result within ${RESULT_FRAME_LIMIT} PAL frames.`,
-    );
+    throw new Error(`${label} did not write its result within ${RESULT_FRAME_LIMIT} PAL frames.`);
   }
   if (result === FAILURE_RESULT) {
-    throw new Error(`${reference.fileName} reported a ${reference.description} mismatch.`);
+    throw new Error(`${label} reported a ${reference.description} mismatch.`);
   }
   if (result !== SUCCESS_RESULT) {
-    throw new Error(`${reference.fileName} wrote unexpected result ${formatScreenCode(result)}.`);
+    throw new Error(`${label} wrote unexpected result ${formatScreenCode(result)}.`);
   }
 
   const borderColor = memory.read(BORDER_COLOR_ADDRESS) & COLOR_MASK;
   if (borderColor !== SUCCESS_BORDER_COLOR) {
     throw new Error(
-      `${reference.fileName} result was successful but border color is ${borderColor}; ` +
+      `${label} result was successful but border color is ${borderColor}; ` +
         `expected ${SUCCESS_BORDER_COLOR}.`,
     );
   }
@@ -252,28 +276,52 @@ function runReference(
 }
 
 async function main(): Promise<void> {
+  const argumentsProvided = process.argv.slice(2);
+  const unknownArgument = argumentsProvided.find((argument) => argument !== FIX_TSEC_ONLY_ARGUMENT);
+  if (unknownArgument !== undefined) {
+    throw new Error(`Unknown CIA TOD verifier argument: ${unknownArgument}.`);
+  }
+  const references = argumentsProvided.includes(FIX_TSEC_ONLY_ARGUMENT)
+    ? CIA_TOD_REFERENCES.filter((reference) => reference.fileName === 'fix-tsec.prg')
+    : CIA_TOD_REFERENCES;
   const [firmware, ...programs] = await Promise.all([
     loadFirmware(),
-    ...CIA_TOD_REFERENCES.map(loadReferenceProgram),
+    ...references.map(loadReferenceProgram),
   ]);
 
-  for (let index = 0; index < CIA_TOD_REFERENCES.length; index += 1) {
-    const reference = CIA_TOD_REFERENCES[index];
+  let completedRuns = 0;
+  for (let index = 0; index < references.length; index += 1) {
+    const reference = references[index];
     const program = programs[index];
     if (!reference || !program) {
       throw new Error(`Missing CIA TOD reference at index ${index}.`);
     }
-    const result = runReference(firmware, reference, program);
-    console.log(
-      `PASS ${reference.fileName}: ${reference.description}, ` +
-        `BASIC READY in ${result.bootFrames} PAL frames, result in ${result.resultFrames} frames, ` +
-        `samples ${result.screenSummary}.`,
-    );
+    const startModes = reference.exhaustiveMatrix
+      ? START_MODES
+      : ([PRG_START_MODE.direct] as const);
+    const models = reference.exhaustiveMatrix ? CIA_MODELS : ([MOS_6526_MODEL.original] as const);
+    for (const startMode of startModes) {
+      for (const model of models) {
+        const result = runReference(firmware, reference, program, startMode, model);
+        const source = reference.exhaustiveMatrix
+          ? `commit ${INVALID_DIGIT_TEST_COMMIT}`
+          : `revision ${UPSTREAM_TEST_REVISION}`;
+        const screenSummary =
+          result.screenSummary === undefined ? '' : `, samples ${result.screenSummary}`;
+        console.log(
+          `PASS ${reference.fileName} ${source} (${startMode}, ${model}): ` +
+            `${reference.description}, BASIC READY in ${result.bootFrames} PAL frames, ` +
+            `result in ${result.resultFrames} frames${screenSummary}.`,
+        );
+        completedRuns += 1;
+      }
+    }
   }
 
   console.log(
-    `PASS CIA TOD suite revision ${UPSTREAM_TEST_REVISION}: ` +
-      `${CIA_TOD_REFERENCES.length} fixed-hash programs.`,
+    `PASS CIA TOD suite revision ${UPSTREAM_TEST_REVISION}, invalid-digit commit ` +
+      `${INVALID_DIGIT_TEST_COMMIT}: ${completedRuns} fixed-hash runs across ` +
+      `${references.length} programs.`,
   );
 }
 

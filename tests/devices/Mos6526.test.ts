@@ -298,6 +298,25 @@ describe('Mos6526', () => {
     expect(cia.tick(1)).toBe(true);
   });
 
+  it('keeps the original Timer B read-underflow collision latched until the next ICR read', () => {
+    const original = new Mos6526('original', { model: MOS_6526_MODEL.original });
+    const revised = new Mos6526('revised', { model: MOS_6526_MODEL.revised });
+
+    for (const cia of [original, revised]) {
+      writeTimerB(cia, 1);
+      cia.write(
+        CIA_REGISTER.timerBControl,
+        CIA_TIMER_CONTROL_BIT.start | CIA_TIMER_CONTROL_BIT.forceLoad,
+      );
+      cia.tick(3);
+      expect(cia.read(CIA_REGISTER.interruptControl)).toBe(0);
+      cia.tick(2);
+    }
+
+    expect(original.read(CIA_REGISTER.interruptControl)).toBe(0);
+    expect(revised.read(CIA_REGISTER.interruptControl)).toBe(CIA_INTERRUPT_BIT.timerB);
+  });
+
   it('cancels an old-CIA interrupt still in flight during an ICR read-modify-write', () => {
     const cia = new Mos6526('original', { model: MOS_6526_MODEL.original });
     writeTimerA(cia, 1);
@@ -337,6 +356,70 @@ describe('Mos6526', () => {
     expect(cia.read(CIA_REGISTER.timeOfDaySeconds)).toBe(0x00);
     expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x00);
   });
+
+  it.each([MOS_6526_MODEL.original, MOS_6526_MODEL.revised])(
+    'advances invalid TOD nibbles as independent binary digits on %s',
+    (model) => {
+      const cia = new Mos6526('invalid TOD digit', { model });
+      cia.write(CIA_REGISTER.timerAControl, CIA_TIMER_CONTROL_BIT.timeOfDay50Hz);
+
+      const step = (time: readonly [number, number, number, number]) => {
+        cia.write(CIA_REGISTER.timeOfDayHours, time[0]);
+        cia.write(CIA_REGISTER.timeOfDayMinutes, time[1]);
+        cia.write(CIA_REGISTER.timeOfDaySeconds, time[2]);
+        cia.write(CIA_REGISTER.timeOfDayTenths, time[3]);
+        cia.tickTimeOfDayInput(5);
+        return [
+          cia.read(CIA_REGISTER.timeOfDayHours),
+          cia.read(CIA_REGISTER.timeOfDayMinutes),
+          cia.read(CIA_REGISTER.timeOfDaySeconds),
+          cia.read(CIA_REGISTER.timeOfDayTenths),
+        ];
+      };
+
+      const cases = [
+        { initial: [0x01, 0x01, 0x01, 0x0a], expected: [0x01, 0x01, 0x01, 0x0b] },
+        { initial: [0x01, 0x01, 0x01, 0x0f], expected: [0x01, 0x01, 0x01, 0x00] },
+        { initial: [0x01, 0x01, 0x0a, 0x09], expected: [0x01, 0x01, 0x0b, 0x00] },
+        { initial: [0x01, 0x01, 0x0f, 0x09], expected: [0x01, 0x01, 0x00, 0x00] },
+        { initial: [0x01, 0x01, 0x69, 0x09], expected: [0x01, 0x01, 0x70, 0x00] },
+        { initial: [0x01, 0x01, 0x79, 0x09], expected: [0x01, 0x01, 0x00, 0x00] },
+        { initial: [0x01, 0x0a, 0x59, 0x09], expected: [0x01, 0x0b, 0x00, 0x00] },
+        { initial: [0x01, 0x0f, 0x59, 0x09], expected: [0x01, 0x00, 0x00, 0x00] },
+        { initial: [0x01, 0x69, 0x59, 0x09], expected: [0x01, 0x70, 0x00, 0x00] },
+        { initial: [0x01, 0x79, 0x59, 0x09], expected: [0x01, 0x00, 0x00, 0x00] },
+        { initial: [0x0a, 0x59, 0x59, 0x09], expected: [0x0b, 0x00, 0x00, 0x00] },
+        { initial: [0x0f, 0x59, 0x59, 0x09], expected: [0x00, 0x00, 0x00, 0x00] },
+        { initial: [0x19, 0x59, 0x59, 0x09], expected: [0x1a, 0x00, 0x00, 0x00] },
+        { initial: [0x1f, 0x59, 0x59, 0x09], expected: [0x10, 0x00, 0x00, 0x00] },
+      ] as const;
+
+      for (const testCase of cases) {
+        expect(step(testCase.initial), `initial TOD ${testCase.initial.join(':')}`).toEqual(
+          testCase.expected,
+        );
+      }
+    },
+  );
+
+  it.each([MOS_6526_MODEL.original, MOS_6526_MODEL.revised])(
+    'keeps the normal 59.9 to 00.0 TOD carry on %s',
+    (model) => {
+      const cia = new Mos6526('normal TOD carry', { model });
+      cia.write(CIA_REGISTER.timerAControl, CIA_TIMER_CONTROL_BIT.timeOfDay50Hz);
+      cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+      cia.write(CIA_REGISTER.timeOfDayMinutes, 0x01);
+      cia.write(CIA_REGISTER.timeOfDaySeconds, 0x59);
+      cia.write(CIA_REGISTER.timeOfDayTenths, 0x09);
+
+      cia.tickTimeOfDayInput(5);
+
+      expect(cia.read(CIA_REGISTER.timeOfDayHours)).toBe(0x01);
+      expect(cia.read(CIA_REGISTER.timeOfDayMinutes)).toBe(0x02);
+      expect(cia.read(CIA_REGISTER.timeOfDaySeconds)).toBe(0x00);
+      expect(cia.read(CIA_REGISTER.timeOfDayTenths)).toBe(0x00);
+    },
+  );
 
   it('restarts a stopped TOD clock with a fresh internal input-divider phase', () => {
     const cia = new Mos6526();

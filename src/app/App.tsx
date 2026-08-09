@@ -1,3 +1,13 @@
+// +-------------------------------------------------------------------------
+//
+//   TypeScript Commodore 64 模拟器 - 浏览器应用组合入口
+//
+//   文件:       App.tsx
+//
+//   日期:       2026年08月09日
+//   作者:       OpenAI Codex
+// --------------------------------------------------------------------------
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AppHeader } from './components/AppHeader';
@@ -75,6 +85,7 @@ export function App() {
       <main className="dashboard" aria-label="TypeScript Commodore 64 Emulator 运行控制台">
         <section id="console" className="console-card" aria-label="Commodore 64 主机">
           <EmulatorWorkspace
+            audioStatus={emulator.audioStatus}
             bootComplete={emulator.bootComplete}
             canvasRef={canvasRef}
             framesPerSecond={emulator.framesPerSecond}
@@ -84,6 +95,8 @@ export function App() {
             phase={emulator.phase}
             onJoystickLinesChange={emulator.setJoystickSourceLines}
             onJoystickRelease={emulator.releaseJoystickSource}
+            onEnableAudio={emulator.enableAudio}
+            onRetryInitialization={emulator.retryInitialization}
             programCounter={emulator.programCounter}
             renderP95Ms={emulator.renderP95Ms}
             sampledFrames={emulator.sampledFrames}

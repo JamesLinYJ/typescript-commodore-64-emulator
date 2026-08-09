@@ -41,6 +41,7 @@ p50/p95/p99 帧耗时、PAL 实时倍率和 SID 样本数；基准只衡量整�
 硬件外部参考门禁：
 
 ```bash
+npm run verify:cpu-rdy-store
 npm run verify:via
 npm run verify:cartridge
 npm run verify:easyflash
@@ -53,14 +54,23 @@ npm run verify:cia:ports
 npm run verify:cia:irqnmi
 npm run verify:cia:icr-rmw
 npm run verify:cia:timer-cascade
+npm run verify:cia:timer-icr
 npm run verify:cia:timer-output
 npm run verify:cia:tod
+npm run verify:cia:tod-invalid
 npm run verify:vic
 npm run verify:vic:sprites
 npm run verify:prg-autostart
 npm run verify:programs
 npm run verify:reference
 ```
+
+`verify:cpu-rdy-store` 会从固定 commit 下载并校验 SHA-256 固定的 `shxy2.prg` 与
+`shyx2.prg`，分别覆盖 SHX 和 SHY。每项程序都会从干净 BASIC 通过 `RUN`/`SYS 2062`
+启动一次，再从 `$080E` 直接启动一次；两条入口都必须写入 `$D7FF=$00`、保持绿色边框，
+并让 `$1080` 起的 24 字节与 6510、8500 真机结果逐字节完全一致。参考程序让精灵 DMA
+恰好在指令第三、第四周期之间拉住 BA/RDY；此时第四周期读会被延长，写入数据的
+`&(H+1)` 必须脱落，但跨页目标地址的高字节仍使用掩码后的值。
 
 `verify:via` 会以项目自己的 1541 CPU 总线逐周期重放 VICE 真机采样序列，核对 MOS 6522
 的 T1/PB7、T1/T2 与 IFR 行为；下载的固定版本参考数据会先校验 SHA-256，校验失败不会
@@ -132,6 +142,12 @@ NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执�
 6526A/8521 真机采样。两项程序会穷举 Timer A 下溢驱动 Timer B 时 CPU 指令访问落在
 级联 STEP 前后的结果；门禁要求完整比较通过、写入 `$D7FF=$00` 并保持绿色边框。
 
+`verify:cia:timer-icr` 会运行固定 commit 与 SHA-256 的 `cia-timer-oldcias.prg` 和
+`cia-timer-newcias.prg`，分别对照原版 6526 与修订版 6526A 的 1 KiB 真机采样。
+两项程序覆盖 CIA1/2 的 Timer A/B，在中断屏蔽和启用状态下逐周期读取 ICR；其中旧芯片
+必须把 ICR 读取后紧邻的 Timer B 下溢碰撞保持到下一次 ICR 读取。完整采样一致后才允许
+写入 `$D7FF=$00` 并保持绿色边框。
+
 `verify:cia:timer-output` 会在两种 CIA 模型上运行 revision 46176 且 SHA-256 固定的
 `pb6pb7/main.prg`。程序把 Port B 配成输入，分别要求 PBON 开启时停止的 Timer A/B
 把 PB6/PB7 驱动为低电平、PBON 关闭后恢复为外部高电平；门禁同时核对 `$D7FF`、边框色
@@ -142,6 +158,10 @@ NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执�
 会复位内部六相分频器，而运行中写十分之一秒、秒、分钟不会误复位，并覆盖从 50 Hz
 切到 60 Hz 以及从 60 Hz 的终态切回 50 Hz 时必须空绕一圈的相位行为；
 每项都必须写入 `$D7FF=$00`、保持绿色边框，并且全部屏幕采样落在真机允许的相邻帧值内。
+同一门禁还会运行固定 commit 与 SHA-256 的 `fix-tsec.prg`，在原版 6526 和修订版 6526A
+上分别通过 BASIC `SYS2061` 与 `$080D` 直接入口验证全部 24 组真机结果。十分之一秒、秒、
+分钟和小时中的每个 BCD 位都是独立二进制计数器：非法 A-F 会继续递增并自然回零，只有
+直接命中该位的十进制终值才进位。`verify:cia:tod-invalid` 可单独运行这四组定向门禁。
 
 `verify:vic` 会验证 PAL 光栅 IRQ，并把光笔同步边框色、动态坏线、hires/multicolor
 精灵优先级以及 `$D017` 在第 54、57 周期切换时的五个完整画面分别与 VICE revision 46176 参考 PNG
