@@ -20,6 +20,15 @@ interface CanvasFrame {
   readonly width: number;
 }
 
+interface AudioLifecycleProbe {
+  starts: number;
+  stops: number;
+}
+
+interface AudioProbeWindow extends Window {
+  __audioLifecycleProbe?: AudioLifecycleProbe;
+}
+
 const PREVIEW_URL = 'http://127.0.0.1:4173';
 const OUTPUT_DIRECTORY = resolve('output/playwright/reference-ui');
 const PROGRAM_START_TIMEOUT_MS = 10_000;
@@ -33,6 +42,39 @@ const MINIMUM_MOBILE_CANVAS_WIDTH_PX = 320;
 const DESKTOP_VIEWPORT = { height: 900, width: 1_440 } as const;
 const MOBILE_PORTRAIT_VIEWPORT = { height: 844, width: 390 } as const;
 const MOBILE_LANDSCAPE_VIEWPORT = { height: 390, width: 844 } as const;
+
+async function installAudioLifecycleProbe(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const probe: AudioLifecycleProbe = { starts: 0, stops: 0 };
+    (window as AudioProbeWindow).__audioLifecycleProbe = probe;
+    Reflect.set(AudioContext.prototype, 'createBufferSource', () => {
+      const source = new EventTarget() as EventTarget & {
+        buffer: AudioBuffer | null;
+        connect: () => void;
+        start: () => void;
+        stop: () => void;
+      };
+      source.buffer = null;
+      source.connect = () => undefined;
+      source.start = () => {
+        probe.starts += 1;
+      };
+      source.stop = () => {
+        probe.stops += 1;
+        source.dispatchEvent(new Event('ended'));
+      };
+      return source as unknown as AudioBufferSourceNode;
+    });
+  });
+}
+
+async function readAudioLifecycleProbe(page: Page): Promise<AudioLifecycleProbe> {
+  return page.evaluate(() => {
+    const probe = (window as AudioProbeWindow).__audioLifecycleProbe;
+    if (!probe) throw new Error('Audio lifecycle probe was not installed.');
+    return { ...probe };
+  });
+}
 
 async function waitForProgramExecution(page: Page): Promise<number> {
   const executionData = page.locator('[aria-label="实时执行数据"]');
@@ -198,6 +240,7 @@ function verifyProgramCanvas(before: CanvasFrame, after: CanvasFrame): void {
 async function verifyDesktop(page: Page): Promise<void> {
   await page.goto(PREVIEW_URL, { waitUntil: 'networkidle' });
   await waitForBoot(page);
+  await installAudioLifecycleProbe(page);
   await verifyNoHorizontalOverflow(page, 'Desktop');
 
   await page.getByRole('heading', { name: 'Commodore 64' }).waitFor();
@@ -205,8 +248,28 @@ async function verifyDesktop(page: Page): Promise<void> {
   await page.getByRole('heading', { name: '运行控制' }).waitFor();
   await page.getByRole('heading', { name: '快捷键参考' }).waitFor();
 
+  await page.getByRole('button', { name: '启用声音' }).click();
+  await page.getByText('声音已开启', { exact: true }).waitFor();
+  await page.waitForFunction(
+    () => ((window as AudioProbeWindow).__audioLifecycleProbe?.starts ?? 0) > 0,
+  );
   await page.getByRole('button', { name: '暂停' }).click();
   await page.getByText('已暂停', { exact: true }).first().waitFor();
+  await page.waitForFunction(
+    () => ((window as AudioProbeWindow).__audioLifecycleProbe?.stops ?? 0) > 0,
+  );
+  const pausedAudio = await readAudioLifecycleProbe(page);
+  if (pausedAudio.starts !== pausedAudio.stops) {
+    throw new Error(
+      `Pause stopped ${pausedAudio.stops}/${pausedAudio.starts} scheduled audio sources.`,
+    );
+  }
+  await page.getByRole('button', { name: '单帧' }).click();
+  await page.waitForTimeout(50);
+  const steppedAudio = await readAudioLifecycleProbe(page);
+  if (steppedAudio.starts !== pausedAudio.starts) {
+    throw new Error('Paused single-frame execution scheduled non-realtime browser audio.');
+  }
   const basicReadyFrame = await captureCanvasFrame(page);
   await page.getByRole('button', { name: '运行' }).click();
   await page.getByText('运行中', { exact: true }).first().waitFor();
@@ -336,6 +399,7 @@ async function verifyMobile(
 ): Promise<void> {
   await page.goto(PREVIEW_URL, { waitUntil: 'networkidle' });
   await waitForBoot(page);
+  await page.getByRole('button', { name: '启用声音' }).waitFor();
   await verifyNoHorizontalOverflow(page, viewportName);
   await verifyMinimumTouchTargets(page, viewportName);
 

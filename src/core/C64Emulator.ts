@@ -42,7 +42,7 @@ import { CanvasRenderer, type RendererState } from '../video/CanvasRenderer';
 import { Cpu6502 } from './cpu/Cpu6502';
 import type { CpuRegisters } from './cpu/CpuRegisters';
 import { C64Memory, type C64CiaModels } from './memory/C64Memory';
-import { WebAudioOutput } from '../platform/WebAudioOutput';
+import { WebAudioOutput, type WebAudioOutputStatus } from '../platform/WebAudioOutput';
 import { BrowserC64Input } from '../platform/BrowserC64Input';
 import { hasBasicReadyPrompt } from './basicStartup';
 
@@ -72,6 +72,7 @@ export interface C64RemoteProgramLoadOptions extends C64ProgramLoadOptions {
 }
 
 interface EmulatorEvents {
+  readonly audioState: WebAudioOutputStatus;
   readonly error: Error;
   readonly frame: { readonly frameNumber: number; readonly renderTime: number };
   readonly programLoaded: LoadedProgram;
@@ -88,6 +89,7 @@ export class C64Emulator extends TypedEventEmitter<EmulatorEvents> {
   readonly renderer: CanvasRenderer;
 
   private readonly stopObservingUserPortDeviceSignals: () => void;
+  private readonly stopObservingAudioState: () => void;
   private resumeAfterUserPortReset = false;
 
   private constructor(
@@ -105,6 +107,9 @@ export class C64Emulator extends TypedEventEmitter<EmulatorEvents> {
     this.drive1541 = drive1541;
     this.input = input;
     this.renderer = renderer;
+    this.stopObservingAudioState = audioOutput.observeStatus((status) =>
+      this.emit('audioState', status),
+    );
     this.stopObservingUserPortDeviceSignals = memory.userPort.observeDeviceSignals(
       ({ current, previous }) => {
         if (current.resetPulledLow === previous.resetPulledLow) return;
@@ -112,8 +117,15 @@ export class C64Emulator extends TypedEventEmitter<EmulatorEvents> {
       },
     );
     renderer.on('frame', (event) => this.emit('frame', event));
-    renderer.on('audio', ({ sampleRate, samples }) => audioOutput.enqueue(samples, sampleRate));
-    renderer.on('state', (state) => this.emit('state', state));
+    renderer.on('audio', ({ sampleRate, samples }) => {
+      // 单帧与程序预启动会在暂停态快速推进硬件；这些样本不属于实时播放时间轴。
+      if (renderer.isRunning) audioOutput.enqueue(samples, sampleRate);
+    });
+    renderer.on('state', (state) => {
+      // 所有暂停路径都在统一状态边界清掉已排队节点，避免声音滞后于画面与控制状态。
+      if (state === 'paused') audioOutput.clear();
+      this.emit('state', state);
+    });
     renderer.on('error', (error) => this.emit('error', error));
     renderer.on('breakpoint', (error) => this.emit('error', error));
   }
@@ -171,6 +183,14 @@ export class C64Emulator extends TypedEventEmitter<EmulatorEvents> {
 
   get basicReady(): boolean {
     return hasBasicReadyPrompt(this.memory);
+  }
+
+  get audioStatus(): WebAudioOutputStatus {
+    return this.audioOutput.status;
+  }
+
+  enableAudio(): Promise<WebAudioOutputStatus> {
+    return this.audioOutput.activate();
   }
 
   start(): void {
@@ -332,6 +352,7 @@ export class C64Emulator extends TypedEventEmitter<EmulatorEvents> {
 
   dispose(): void {
     this.renderer.dispose();
+    this.stopObservingAudioState();
     this.audioOutput.dispose();
     this.input.dispose();
     this.memory.datasette.disconnect();

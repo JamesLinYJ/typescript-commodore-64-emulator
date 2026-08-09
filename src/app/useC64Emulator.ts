@@ -1,7 +1,18 @@
+// +-------------------------------------------------------------------------
+//
+//   TypeScript Commodore 64 模拟器 - React 模拟器生命周期控制器
+//
+//   文件:       useC64Emulator.ts
+//
+//   日期:       2026年08月09日
+//   作者:       OpenAI Codex
+// --------------------------------------------------------------------------
+
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 
 import type { C64Emulator } from '../core/C64Emulator';
 import type { BundledProgramDescriptor } from '../media/BundledProgramCatalog';
+import type { WebAudioOutputStatus } from '../platform/WebAudioOutput';
 import { hex } from '../shared/numbers';
 import { PAL_VIDEO_STANDARD } from '../video/palVideoStandard';
 
@@ -21,6 +32,8 @@ interface EmulatorViewState {
 }
 
 export interface C64EmulatorController extends EmulatorViewState {
+  readonly audioStatus: WebAudioOutputStatus;
+  readonly enableAudio: () => Promise<void>;
   readonly isReady: boolean;
   readonly loadBuiltInProgram: (program: BundledProgramDescriptor) => Promise<boolean>;
   readonly loadLocalProgram: (file: File) => Promise<boolean>;
@@ -61,6 +74,7 @@ export function useC64Emulator(
   const [renderP95Ms, setRenderP95Ms] = useState<number>();
   const [overBudgetFrames, setOverBudgetFrames] = useState(0);
   const [sampledFrames, setSampledFrames] = useState(0);
+  const [audioStatus, setAudioStatus] = useState<WebAudioOutputStatus>({ state: 'inactive' });
 
   const showMessage = useCallback((nextMessage: string): void => {
     setMessage(nextMessage);
@@ -93,6 +107,7 @@ export function useC64Emulator(
     let lastFrameUpdate = performance.now();
     const renderTimes: number[] = [];
     bootCompleteRef.current = false;
+    setAudioStatus({ state: 'inactive' });
 
     const initialize = async (): Promise<void> => {
       try {
@@ -115,6 +130,8 @@ export function useC64Emulator(
         }
 
         emulatorRef.current = emulator;
+        setAudioStatus(emulator.audioStatus);
+        emulator.on('audioState', setAudioStatus);
         emulator.on('state', (nextState) => {
           if (nextState === 'running') {
             framesSinceUpdate = 0;
@@ -244,6 +261,30 @@ export function useC64Emulator(
     emulatorRef.current?.toggle();
   }, []);
 
+  const enableAudio = useCallback(async (): Promise<void> => {
+    const emulator = emulatorRef.current;
+    if (!emulator) return;
+
+    const status = await emulator.enableAudio();
+    if (emulatorRef.current !== emulator) return;
+    setAudioStatus(status);
+    switch (status.state) {
+      case 'running':
+        showMessage('声音已启用。');
+        break;
+      case 'unavailable':
+        showOperationError(new Error('当前浏览器不支持 Web Audio，模拟器将静音运行。'));
+        break;
+      case 'error':
+        showOperationError(
+          new Error(`声音未能启用：${status.error?.message ?? '浏览器拒绝了音频请求。'}`),
+        );
+        break;
+      default:
+        break;
+    }
+  }, [showMessage, showOperationError]);
+
   const setJoystickSourceLines = useCallback(
     (sourceId: number, groundedDigitalLines: number): void => {
       emulatorRef.current?.input.setJoystickSourceLines(sourceId, groundedDigitalLines);
@@ -276,7 +317,9 @@ export function useC64Emulator(
   const isReady = bootComplete && (phase === 'paused' || phase === 'running');
 
   return {
+    audioStatus,
     bootComplete,
+    enableAudio,
     framesPerSecond,
     isReady,
     loadBuiltInProgram,

@@ -1,6 +1,18 @@
+// +-------------------------------------------------------------------------
+//
+//   TypeScript Commodore 64 模拟器 - 模拟器屏幕与实时状态工作区
+//
+//   文件:       EmulatorWorkspace.tsx
+//
+//   日期:       2026年08月09日
+//   作者:       OpenAI Codex
+// --------------------------------------------------------------------------
+
+import { Volume2, VolumeX } from 'lucide-react';
 import { useState, type CSSProperties, type PointerEvent, type RefObject } from 'react';
 
 import type { EmulatorPhase, MessageTone } from '../useC64Emulator';
+import type { WebAudioOutputStatus } from '../../platform/WebAudioOutput';
 import { PAL_VIDEO_STANDARD } from '../../video/palVideoStandard';
 import { TouchControls } from './TouchControls';
 
@@ -11,6 +23,7 @@ interface ScreenStyle extends CSSProperties {
 export type DisplayScale = 'fit' | '1x' | '2x';
 
 interface EmulatorWorkspaceProps {
+  readonly audioStatus: WebAudioOutputStatus;
   readonly bootComplete: boolean;
   readonly canvasRef: RefObject<HTMLCanvasElement | null>;
   readonly displayScale: DisplayScale;
@@ -21,6 +34,7 @@ interface EmulatorWorkspaceProps {
   readonly phase: EmulatorPhase;
   readonly onJoystickLinesChange: (sourceId: number, groundedDigitalLines: number) => void;
   readonly onJoystickRelease: (sourceId: number) => void;
+  readonly onEnableAudio: () => Promise<void>;
   readonly programCounter: string;
   readonly renderP95Ms: number | undefined;
   readonly sampledFrames: number;
@@ -38,7 +52,49 @@ function focusScreen(event: PointerEvent<HTMLDivElement>): void {
   event.currentTarget.focus();
 }
 
+function AudioStatusControl({
+  disabled,
+  onEnableAudio,
+  status,
+}: {
+  readonly disabled: boolean;
+  readonly onEnableAudio: () => Promise<void>;
+  readonly status: WebAudioOutputStatus;
+}) {
+  if (status.state === 'running') {
+    return (
+      <span className="audio-status-control is-running" role="status">
+        <Volume2 aria-hidden="true" />
+        声音已开启
+      </span>
+    );
+  }
+  if (status.state === 'unavailable') {
+    return (
+      <span className="audio-status-control is-unavailable" role="status">
+        <VolumeX aria-hidden="true" />
+        浏览器无音频支持
+      </span>
+    );
+  }
+
+  const label =
+    status.state === 'error' ? '重试声音' : status.state === 'suspended' ? '恢复声音' : '启用声音';
+  return (
+    <button
+      className={`audio-status-control${status.state === 'error' ? ' is-error' : ''}`}
+      type="button"
+      disabled={disabled}
+      onClick={() => void onEnableAudio()}
+    >
+      <Volume2 aria-hidden="true" />
+      {label}
+    </button>
+  );
+}
+
 export function EmulatorWorkspace({
+  audioStatus,
   bootComplete,
   canvasRef,
   displayScale,
@@ -49,6 +105,7 @@ export function EmulatorWorkspace({
   phase,
   onJoystickLinesChange,
   onJoystickRelease,
+  onEnableAudio,
   programCounter,
   renderP95Ms,
   sampledFrames,
@@ -149,6 +206,11 @@ export function EmulatorWorkspace({
 
       <div className={`emulator-feedback${messageTone === 'error' ? ' is-error' : ''}`}>
         <p aria-live="polite">{message}</p>
+        <AudioStatusControl
+          disabled={phase === 'loading' || phase === 'error'}
+          onEnableAudio={onEnableAudio}
+          status={audioStatus}
+        />
         <div className="runtime-telemetry" aria-label="实时执行数据">
           <span>
             PAL {PAL_VIDEO_STANDARD.timing.refreshRateHz.toFixed(2)} Hz · 呈现{' '}
