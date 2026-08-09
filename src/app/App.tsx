@@ -96,6 +96,7 @@ export function App() {
             onJoystickLinesChange={emulator.setJoystickSourceLines}
             onJoystickRelease={emulator.releaseJoystickSource}
             onEnableAudio={emulator.enableAudio}
+            onRetryInitialization={emulator.retryInitialization}
             programCounter={emulator.programCounter}
             renderP95Ms={emulator.renderP95Ms}
             sampledFrames={emulator.sampledFrames}

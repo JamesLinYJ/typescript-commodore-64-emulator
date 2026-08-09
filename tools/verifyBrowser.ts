@@ -11,7 +11,7 @@
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import { chromium, type Page } from 'playwright';
+import { chromium, type ConsoleMessage, type Page, type Response } from 'playwright';
 import { PNG } from 'pngjs';
 
 interface CanvasFrame {
@@ -29,6 +29,11 @@ interface AudioProbeWindow extends Window {
   __audioLifecycleProbe?: AudioLifecycleProbe;
 }
 
+interface BrowserProblemAllowlist {
+  readonly console?: (message: ConsoleMessage) => boolean;
+  readonly response?: (response: Response) => boolean;
+}
+
 const PREVIEW_URL = 'http://127.0.0.1:4173';
 const OUTPUT_DIRECTORY = resolve('output/playwright/reference-ui');
 const PROGRAM_START_TIMEOUT_MS = 10_000;
@@ -39,6 +44,8 @@ const MINIMUM_PROGRAM_CHANGED_PIXELS = 4_000;
 const MINIMUM_PROGRAM_COLOR_COUNT = 2;
 const MINIMUM_TOUCH_TARGET_PX = 44;
 const MINIMUM_MOBILE_CANVAS_WIDTH_PX = 320;
+const BASIC_FIRMWARE_PATH = '/firmware/basic.901226-01.bin';
+const INITIALIZATION_HTTP_ERROR = '模拟器固件下载失败（HTTP 503）。请稍后重试。';
 const DESKTOP_VIEWPORT = { height: 900, width: 1_440 } as const;
 const MOBILE_PORTRAIT_VIEWPORT = { height: 844, width: 390 } as const;
 const MOBILE_LANDSCAPE_VIEWPORT = { height: 390, width: 844 } as const;
@@ -92,10 +99,15 @@ async function waitForProgramExecution(page: Page): Promise<number> {
   throw new Error(`Galaga did not begin executing from RAM; latest status was "${latestText}".`);
 }
 
-function collectBrowserProblems(page: Page, problems: string[]): void {
+function collectBrowserProblems(
+  page: Page,
+  problems: string[],
+  allowlist: BrowserProblemAllowlist = {},
+): void {
   const previewOrigin = new URL(PREVIEW_URL).origin;
   page.on('console', (message) => {
     if (message.type() === 'error' || message.type() === 'warning') {
+      if (allowlist.console?.(message)) return;
       problems.push(`console.${message.type()}: ${message.text()}`);
     }
   });
@@ -108,10 +120,101 @@ function collectBrowserProblems(page: Page, problems: string[]): void {
   });
   page.on('response', (response) => {
     if (response.status() < 400 || new URL(response.url()).origin !== previewOrigin) return;
+    if (allowlist.response?.(response)) return;
     problems.push(
       `response ${response.status()}: ${response.request().method()} ${response.url()}`,
     );
   });
+}
+
+async function verifyInitializationError(
+  page: Page,
+  viewportHeight: number,
+  attempt: string,
+): Promise<void> {
+  const alert = page.getByRole('alert');
+  await alert.waitFor();
+  const message = (await alert.textContent())?.trim();
+  if (message !== INITIALIZATION_HTTP_ERROR) {
+    throw new Error(`${attempt} initialization failure showed "${message ?? ''}".`);
+  }
+  if (message.includes('Failed to fetch') || message.includes('Unable to load')) {
+    throw new Error(`${attempt} initialization failure leaked an English transport error.`);
+  }
+  const errorColors = await page.evaluate(() => {
+    const alertElement = document.querySelector<HTMLElement>('[role="alert"]');
+    const machineStatus = document.querySelector<HTMLElement>('.machine-status--error');
+    return {
+      alert: alertElement ? getComputedStyle(alertElement).color : '',
+      status: machineStatus ? getComputedStyle(machineStatus).color : '',
+    };
+  });
+  if (!errorColors.alert || errorColors.status !== errorColors.alert) {
+    throw new Error(`${attempt} machine status did not use the visible error color.`);
+  }
+
+  const retry = page.getByRole('button', { name: '重新初始化' });
+  await retry.waitFor();
+  const bounds = await retry.boundingBox();
+  if (!bounds) throw new Error(`${attempt} retry control is not visible.`);
+  if (bounds.width < MINIMUM_TOUCH_TARGET_PX || bounds.height < MINIMUM_TOUCH_TARGET_PX) {
+    throw new Error(
+      `${attempt} retry control is only ${bounds.width.toFixed(1)}x${bounds.height.toFixed(1)}px.`,
+    );
+  }
+  if (bounds.y < 0 || bounds.y + bounds.height > viewportHeight) {
+    throw new Error(`${attempt} retry control is outside the initial mobile viewport.`);
+  }
+}
+
+async function verifyMobileInitializationRecovery(
+  page: Page,
+  expectedFailures: { acceptedConsoleErrors: number; acceptedResponses: number },
+  requestCount: () => number,
+): Promise<void> {
+  await page.goto(PREVIEW_URL, { waitUntil: 'networkidle' });
+  await verifyInitializationError(page, MOBILE_PORTRAIT_VIEWPORT.height, 'First');
+  await verifyNoHorizontalOverflow(page, 'Mobile recovery error');
+  await page.screenshot({
+    path: resolve(OUTPUT_DIRECTORY, 'current-mobile-recovery-error.png'),
+    fullPage: false,
+  });
+
+  const retry = page.getByRole('button', { name: '重新初始化' });
+  await retry.focus();
+  const secondFailure = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.endsWith(BASIC_FIRMWARE_PATH) && response.status() === 503,
+  );
+  await page.keyboard.press('Enter');
+  const secondFailureResponse = await secondFailure;
+  await secondFailureResponse.finished();
+  await verifyInitializationError(page, MOBILE_PORTRAIT_VIEWPORT.height, 'Second');
+
+  const successfulFirmware = page.waitForResponse(
+    (response) => new URL(response.url()).pathname.endsWith(BASIC_FIRMWARE_PATH) && response.ok(),
+  );
+  await page.getByRole('button', { name: '重新初始化' }).click();
+  const successfulFirmwareResponse = await successfulFirmware;
+  await successfulFirmwareResponse.finished();
+  await waitForBoot(page);
+  if ((await page.getByRole('button', { name: '重新初始化' }).count()) !== 0) {
+    throw new Error('Retry control remained after successful initialization.');
+  }
+  if ((await page.locator('canvas').count()) !== 1) {
+    throw new Error('Initialization recovery duplicated the emulator canvas.');
+  }
+  if (requestCount() !== 3 || expectedFailures.acceptedResponses !== 2) {
+    throw new Error(
+      `Recovery used ${requestCount()} BASIC requests and allowed ` +
+        `${expectedFailures.acceptedResponses} expected 503 responses; expected 3 and 2.`,
+    );
+  }
+  if (expectedFailures.acceptedConsoleErrors > 2) {
+    throw new Error('Recovery allowed more console errors than the two expected HTTP failures.');
+  }
+  await verifyNoHorizontalOverflow(page, 'Mobile recovery success');
+  await verifyMinimumTouchTargets(page, 'Mobile recovery success');
 }
 
 async function waitForBoot(page: Page): Promise<void> {
@@ -490,6 +593,55 @@ async function main(): Promise<void> {
       { initiallyVisible: false, input: false },
     );
     await landscape.close();
+
+    const recovery = await browser.newPage({
+      hasTouch: true,
+      isMobile: true,
+      viewport: MOBILE_PORTRAIT_VIEWPORT,
+    });
+    let basicFirmwareRequests = 0;
+    const expectedFailures = { acceptedConsoleErrors: 0, acceptedResponses: 0 };
+    await recovery.route(`**${BASIC_FIRMWARE_PATH}`, async (route) => {
+      basicFirmwareRequests += 1;
+      if (basicFirmwareRequests <= 2) {
+        await route.fulfill({
+          body: 'expected browser recovery probe',
+          contentType: 'text/plain; charset=utf-8',
+          status: 503,
+        });
+        return;
+      }
+      await route.continue();
+    });
+    collectBrowserProblems(recovery, problems, {
+      console: (message) => {
+        if (
+          expectedFailures.acceptedConsoleErrors >= 2 ||
+          !/status of 503|HTTP 503/iu.test(message.text())
+        ) {
+          return false;
+        }
+        expectedFailures.acceptedConsoleErrors += 1;
+        return true;
+      },
+      response: (response) => {
+        if (
+          expectedFailures.acceptedResponses >= 2 ||
+          response.status() !== 503 ||
+          !new URL(response.url()).pathname.endsWith(BASIC_FIRMWARE_PATH)
+        ) {
+          return false;
+        }
+        expectedFailures.acceptedResponses += 1;
+        return true;
+      },
+    });
+    await verifyMobileInitializationRecovery(
+      recovery,
+      expectedFailures,
+      () => basicFirmwareRequests,
+    );
+    await recovery.close();
   } finally {
     await browser.close();
   }
@@ -498,7 +650,7 @@ async function main(): Promise<void> {
     throw new Error(`Browser verification reported problems:\n${problems.join('\n')}`);
   }
   console.log(
-    'PASS browser UI: 1440 desktop, 390 portrait, 844 landscape, CDP multi-touch, 44px targets, 0 overflow/warnings/errors.',
+    'PASS browser UI: 1440 desktop, 390 portrait/recovery, 844 landscape, CDP multi-touch, 44px targets, 0 unexpected overflow/warnings/errors.',
   );
 }
 

@@ -225,6 +225,10 @@ svg {
   background: var(--danger-soft);
 }
 
+.machine-status--running {
+  color: var(--success);
+}
+
 .icon-button {
   width: 2.75rem;
   height: 2.75rem;
@@ -320,7 +324,6 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
-  color: var(--success);
   font-size: 0.76rem;
   white-space: nowrap;
 }
@@ -509,6 +512,10 @@ svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.initialization-retry {
+  flex: 0 0 auto;
 }
 
 .audio-status-control {
@@ -1102,6 +1109,10 @@ select:disabled {
   }
 
   .audio-status-control {
+    width: 100%;
+  }
+
+  .initialization-retry {
     width: 100%;
   }
 

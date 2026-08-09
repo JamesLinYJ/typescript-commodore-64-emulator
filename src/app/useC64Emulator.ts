@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 
-import type { C64Emulator } from '../core/C64Emulator';
+import type { C64Emulator, C64EmulatorOptions } from '../core/C64Emulator';
 import type { BundledProgramDescriptor } from '../media/BundledProgramCatalog';
 import type { WebAudioOutputStatus } from '../platform/WebAudioOutput';
 import { hex } from '../shared/numbers';
@@ -18,6 +18,7 @@ import { PAL_VIDEO_STANDARD } from '../video/palVideoStandard';
 
 export type EmulatorPhase = 'error' | 'loading' | 'paused' | 'running';
 export type MessageTone = 'error' | 'normal';
+export type C64EmulatorFactory = (options: C64EmulatorOptions) => Promise<C64Emulator>;
 
 interface EmulatorViewState {
   readonly bootComplete: boolean;
@@ -39,15 +40,19 @@ export interface C64EmulatorController extends EmulatorViewState {
   readonly loadLocalProgram: (file: File) => Promise<boolean>;
   readonly releaseJoystickSource: (sourceId: number) => void;
   readonly reset: () => void;
+  readonly retryInitialization: () => void;
   readonly stepFrame: () => void;
   readonly setJoystickSourceLines: (sourceId: number, groundedDigitalLines: number) => void;
   readonly toggle: () => void;
 }
 
 const INITIAL_MESSAGE = '模拟器初始化中。屏幕就绪后可选择内置程序，或载入本地 PRG。';
+const RETRY_MESSAGE = '正在重新载入固件并初始化模拟器…';
 const READY_MESSAGE = 'BASIC 已就绪。选择程序后点击“载入”，或直接拖入 PRG 文件。';
 const FRAME_SAMPLE_LIMIT = 120;
 const PAL_FRAME_BUDGET_MS = 1000 / PAL_VIDEO_STANDARD.timing.refreshRateHz;
+const HTTP_STATUS_PATTERN = /\bHTTP\s+(\d{3})\b/iu;
+const NETWORK_FAILURE_PATTERN = /failed to fetch|fetch failed|networkerror|load failed/iu;
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -57,14 +62,34 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
+export function describeInitializationFailure(error: unknown): string {
+  const detail = toError(error).message;
+  const httpStatus = HTTP_STATUS_PATTERN.exec(detail)?.[1];
+  if (httpStatus) {
+    return `模拟器固件下载失败（HTTP ${httpStatus}）。请稍后重试。`;
+  }
+  if (error instanceof TypeError && NETWORK_FAILURE_PATTERN.test(detail)) {
+    return '模拟器固件下载失败。请检查网络连接后重试。';
+  }
+  return '模拟器启动失败。请重试；如果问题持续，请刷新页面。';
+}
+
+const createBrowserC64Emulator: C64EmulatorFactory = async (options) => {
+  const { C64Emulator } = await import('../core/C64Emulator');
+  return C64Emulator.create(options);
+};
+
 export function useC64Emulator(
   canvasRef: RefObject<HTMLCanvasElement | null>,
   keyboardTargetRef: RefObject<HTMLElement | null>,
+  createEmulator: C64EmulatorFactory = createBrowserC64Emulator,
 ): C64EmulatorController {
+  const createEmulatorRef = useRef(createEmulator);
   const emulatorRef = useRef<C64Emulator | null>(null);
   const bootCompleteRef = useRef(false);
   const programRequestRef = useRef<AbortController | null>(null);
   const operationIdRef = useRef(0);
+  const [initializationAttempt, setInitializationAttempt] = useState(0);
   const [phase, setPhase] = useState<EmulatorPhase>('loading');
   const [framesPerSecond, setFramesPerSecond] = useState<number>();
   const [programCounter, setProgramCounter] = useState('0000');
@@ -107,13 +132,21 @@ export function useC64Emulator(
     let lastFrameUpdate = performance.now();
     const renderTimes: number[] = [];
     bootCompleteRef.current = false;
+    setBootComplete(false);
+    setFramesPerSecond(undefined);
+    setMessage(initializationAttempt === 0 ? INITIAL_MESSAGE : RETRY_MESSAGE);
+    setMessageTone('normal');
+    setOverBudgetFrames(0);
+    setPhase('loading');
+    setProgramCounter('0000');
+    setRenderP95Ms(undefined);
+    setSampledFrames(0);
     setAudioStatus({ state: 'inactive' });
 
     const initialize = async (): Promise<void> => {
       try {
-        const { C64Emulator } = await import('../core/C64Emulator');
         const base = import.meta.env.BASE_URL;
-        emulator = await C64Emulator.create({
+        emulator = await createEmulatorRef.current({
           canvas,
           firmwareUrls: {
             basic: `${base}firmware/basic.901226-01.bin`,
@@ -179,7 +212,9 @@ export function useC64Emulator(
         emulator.start();
         showMessage('BASIC 正在启动。选择程序后点击“载入”，或直接拖入 PRG 文件。');
       } catch (error: unknown) {
-        if (!initialization.signal.aborted) showFatalError(error);
+        if (!initialization.signal.aborted) {
+          showFatalError(new Error(describeInitializationFailure(error)));
+        }
       }
     };
 
@@ -188,12 +223,14 @@ export function useC64Emulator(
     return () => {
       disposed = true;
       initialization.abort();
-      programRequestRef.current?.abort();
+      const programRequest = programRequestRef.current;
+      programRequest?.abort();
+      if (programRequestRef.current === programRequest) programRequestRef.current = null;
       operationIdRef.current += 1;
       if (emulatorRef.current === emulator) emulatorRef.current = null;
       emulator?.dispose();
     };
-  }, [canvasRef, keyboardTargetRef, showFatalError, showMessage]);
+  }, [canvasRef, initializationAttempt, keyboardTargetRef, showFatalError, showMessage]);
 
   const loadBuiltInProgram = useCallback(
     async (program: BundledProgramDescriptor): Promise<boolean> => {
@@ -306,6 +343,13 @@ export function useC64Emulator(
     showMessage('CPU 已复位，内存内容保持不变。');
   }, [showMessage]);
 
+  const retryInitialization = useCallback((): void => {
+    setPhase('loading');
+    setMessage(RETRY_MESSAGE);
+    setMessageTone('normal');
+    setInitializationAttempt((current) => current + 1);
+  }, []);
+
   const stepFrame = useCallback((): void => {
     const emulator = emulatorRef.current;
     if (!emulator || emulator.state === 'running') return;
@@ -332,6 +376,7 @@ export function useC64Emulator(
     releaseJoystickSource,
     renderP95Ms,
     reset,
+    retryInitialization,
     sampledFrames,
     stepFrame,
     setJoystickSourceLines,

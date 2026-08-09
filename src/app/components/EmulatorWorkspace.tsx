@@ -8,7 +8,7 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { Volume2, VolumeX } from 'lucide-react';
+import { RefreshCw, Volume2, VolumeX } from 'lucide-react';
 import { useState, type CSSProperties, type PointerEvent, type RefObject } from 'react';
 
 import type { EmulatorPhase, MessageTone } from '../useC64Emulator';
@@ -35,6 +35,7 @@ interface EmulatorWorkspaceProps {
   readonly onJoystickLinesChange: (sourceId: number, groundedDigitalLines: number) => void;
   readonly onJoystickRelease: (sourceId: number) => void;
   readonly onEnableAudio: () => Promise<void>;
+  readonly onRetryInitialization: () => void;
   readonly programCounter: string;
   readonly renderP95Ms: number | undefined;
   readonly sampledFrames: number;
@@ -106,6 +107,7 @@ export function EmulatorWorkspace({
   onJoystickLinesChange,
   onJoystickRelease,
   onEnableAudio,
+  onRetryInitialization,
   programCounter,
   renderP95Ms,
   sampledFrames,
@@ -205,7 +207,23 @@ export function EmulatorWorkspace({
       />
 
       <div className={`emulator-feedback${messageTone === 'error' ? ' is-error' : ''}`}>
-        <p aria-live="polite">{message}</p>
+        <p
+          aria-atomic="true"
+          aria-live={messageTone === 'error' ? 'assertive' : 'polite'}
+          role={messageTone === 'error' ? 'alert' : undefined}
+        >
+          {message}
+        </p>
+        {phase === 'error' ? (
+          <button
+            className="button button--outline-primary initialization-retry"
+            type="button"
+            onClick={onRetryInitialization}
+          >
+            <RefreshCw aria-hidden="true" />
+            重新初始化
+          </button>
+        ) : null}
         <AudioStatusControl
           disabled={phase === 'loading' || phase === 'error'}
           onEnableAudio={onEnableAudio}
