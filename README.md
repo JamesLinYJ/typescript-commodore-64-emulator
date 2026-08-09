@@ -57,6 +57,7 @@ npm run verify:cia:timer-cascade
 npm run verify:cia:timer-icr
 npm run verify:cia:timer-output
 npm run verify:cia:tod
+npm run verify:cia:tod-invalid
 npm run verify:vic
 npm run verify:vic:sprites
 npm run verify:prg-autostart
@@ -157,6 +158,10 @@ NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执�
 会复位内部六相分频器，而运行中写十分之一秒、秒、分钟不会误复位，并覆盖从 50 Hz
 切到 60 Hz 以及从 60 Hz 的终态切回 50 Hz 时必须空绕一圈的相位行为；
 每项都必须写入 `$D7FF=$00`、保持绿色边框，并且全部屏幕采样落在真机允许的相邻帧值内。
+同一门禁还会运行固定 commit 与 SHA-256 的 `fix-tsec.prg`，在原版 6526 和修订版 6526A
+上分别通过 BASIC `SYS2061` 与 `$080D` 直接入口验证全部 24 组真机结果。十分之一秒、秒、
+分钟和小时中的每个 BCD 位都是独立二进制计数器：非法 A-F 会继续递增并自然回零，只有
+直接命中该位的十进制终值才进位。`verify:cia:tod-invalid` 可单独运行这四组定向门禁。
 
 `verify:vic` 会验证 PAL 光栅 IRQ，并把光笔同步边框色、动态坏线、hires/multicolor
 精灵优先级以及 `$D017` 在第 54、57 周期切换时的五个完整画面分别与 VICE revision 46176 参考 PNG

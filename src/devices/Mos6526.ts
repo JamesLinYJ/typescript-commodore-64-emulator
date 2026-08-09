@@ -8,7 +8,7 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { byte, fromBcd, toBcd } from '../shared/numbers';
+import { byte } from '../shared/numbers';
 import {
   CIA_INTERRUPT_BIT,
   CIA_PORT_BIT,
@@ -678,44 +678,65 @@ export class Mos6526 extends IoDevice {
   }
 
   private incrementTimeOfDay(): void {
-    const tenths = fromBcd(this.timeOfDay[0] ?? 0) + 1;
-    if (tenths < CIA_TIME_OF_DAY.tenthsPerSecond) {
-      this.timeOfDay[0] = toBcd(tenths);
-      this.checkAlarm();
-      return;
+    if (
+      this.incrementTimeOfDayTenths() &&
+      this.incrementTimeOfDayMinuteOrSecond(1) &&
+      this.incrementTimeOfDayMinuteOrSecond(2)
+    ) {
+      this.incrementTimeOfDayHour();
     }
-    this.timeOfDay[0] = 0;
-
-    const seconds = fromBcd(this.timeOfDay[1] ?? 0) + 1;
-    if (seconds < CIA_TIME_OF_DAY.secondsPerMinute) {
-      this.timeOfDay[1] = toBcd(seconds);
-      this.checkAlarm();
-      return;
-    }
-    this.timeOfDay[1] = 0;
-
-    const minutes = fromBcd(this.timeOfDay[2] ?? 0) + 1;
-    if (minutes < CIA_TIME_OF_DAY.minutesPerHour) {
-      this.timeOfDay[2] = toBcd(minutes);
-      this.checkAlarm();
-      return;
-    }
-    this.timeOfDay[2] = 0;
-    this.incrementTimeOfDayHour();
     this.checkAlarm();
+  }
+
+  private incrementTimeOfDayTenths(): boolean {
+    const digit = (this.timeOfDay[0] ?? 0) & 0x0f;
+    if (digit === CIA_TIME_OF_DAY.tenthsPerSecond - 1) {
+      this.timeOfDay[0] = 0;
+      return true;
+    }
+
+    // TOD 各 BCD 位是独立的二进制计数器；非法 A-F 会继续计到 F 后自然回零，
+    // 只有直接命中十进制终值 9 才向下一位进位。
+    this.timeOfDay[0] = (digit + 1) & 0x0f;
+    return false;
+  }
+
+  private incrementTimeOfDayMinuteOrSecond(index: 1 | 2): boolean {
+    const encoded = this.timeOfDay[index] ?? 0;
+    const units = encoded & 0x0f;
+    if (units !== 9) {
+      this.timeOfDay[index] = (encoded & 0x70) | ((units + 1) & 0x0f);
+      return false;
+    }
+
+    const tens = (encoded >> 4) & 0x07;
+    if (tens === 5) {
+      this.timeOfDay[index] = 0;
+      return true;
+    }
+
+    this.timeOfDay[index] = ((tens + 1) & 0x07) << 4;
+    return false;
   }
 
   private incrementTimeOfDayHour(): void {
     const encoded = this.timeOfDay[3] ?? 0;
     const afternoon = encoded & CIA_TIME_OF_DAY.afternoonBit;
-    const hour = Math.max(1, fromBcd(encoded & CIA_TIME_OF_DAY.hourMask));
-    if (hour === 11) {
-      this.timeOfDay[3] = (afternoon ^ CIA_TIME_OF_DAY.afternoonBit) | toBcd(12);
-    } else if (hour === 12) {
-      this.timeOfDay[3] = afternoon | toBcd(1);
-    } else {
-      this.timeOfDay[3] = afternoon | toBcd(hour + 1);
+    const hour = encoded & CIA_TIME_OF_DAY.hourMask;
+    if (hour === 0x09) {
+      this.timeOfDay[3] = afternoon | 0x10;
+      return;
     }
+    if (hour === 0x11) {
+      this.timeOfDay[3] = (afternoon ^ CIA_TIME_OF_DAY.afternoonBit) | 0x12;
+      return;
+    }
+    if (hour === 0x12) {
+      this.timeOfDay[3] = afternoon | 0x01;
+      return;
+    }
+
+    this.timeOfDay[3] = afternoon | (hour & 0x10) | (((hour & 0x0f) + 1) & 0x0f);
   }
 
   private checkAlarm(): void {
