@@ -16,7 +16,9 @@
   "include": [
     "vite.config.ts",
     "eslint.config.js",
+    "build",
     "tools",
+    "worker",
     "src/core/basicStartup.ts",
     "src/core/C64Machine.ts",
     "src/core/CpuBusArbitrationInvariantError.ts",
