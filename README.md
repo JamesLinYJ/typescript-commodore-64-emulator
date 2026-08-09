@@ -57,6 +57,7 @@ npm run verify:cia:timer-cascade
 npm run verify:cia:timer-icr
 npm run verify:cia:timer-output
 npm run verify:cia:tod
+npm run verify:cia:tod-alarm
 npm run verify:cia:tod-invalid
 npm run verify:vic
 npm run verify:vic:sprites
@@ -162,6 +163,12 @@ NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执�
 上分别通过 BASIC `SYS2061` 与 `$080D` 直接入口验证全部 24 组真机结果。十分之一秒、秒、
 分钟和小时中的每个 BCD 位都是独立二进制计数器：非法 A-F 会继续递增并自然回零，只有
 直接命中该位的十进制终值才进位。`verify:cia:tod-invalid` 可单独运行这四组定向门禁。
+固定 commit 与 SHA-256 的 `alarm-cond.prg` 和 `alarm-cond2.prg` 则在两种 CIA 模型、两种入口
+上分别逐字段把 TOD 时间写成当前 alarm、把 alarm 写成当前 TOD：小时、分钟和秒写入后不得
+提前设置 ICR alarm 源，最后写入十分之一秒完成相等状态时必须立即设置。两个程序每轮都会先
+写一次阶段性 `$D7FF=$00`，所以门禁必须收到连续两次 `$00` 并保持绿色边框，不能把首次写入
+误判为成功。`verify:cia:tod-alarm` 可单独运行两个程序的八组矩阵；完整 `verify:cia:tod` 已
+包含它们，因此 `verify:reference` 也会持续覆盖。
 
 `verify:vic` 会验证 PAL 光栅 IRQ，并把光笔同步边框色、动态坏线、hires/multicolor
 精灵优先级以及 `$D017` 在第 54、57 周期切换时的五个完整画面分别与 VICE revision 46176 参考 PNG

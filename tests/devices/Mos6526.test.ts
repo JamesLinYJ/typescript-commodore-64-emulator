@@ -617,6 +617,65 @@ describe('Mos6526', () => {
     );
   });
 
+  it.each([MOS_6526_MODEL.original, MOS_6526_MODEL.revised])(
+    'raises the alarm source only when the final TOD write completes a match on %s',
+    (model) => {
+      const cia = new Mos6526('TOD write alarm', { model });
+      cia.write(CIA_REGISTER.timerBControl, CIA_TIMER_CONTROL_BIT.alarmWrite);
+      cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+      cia.write(CIA_REGISTER.timeOfDayMinutes, 0x02);
+      cia.write(CIA_REGISTER.timeOfDaySeconds, 0x03);
+      cia.write(CIA_REGISTER.timeOfDayTenths, 0x04);
+
+      cia.write(CIA_REGISTER.timerBControl, 0);
+      cia.write(CIA_REGISTER.timeOfDayHours, 0x09);
+      cia.write(CIA_REGISTER.timeOfDayMinutes, 0x08);
+      cia.write(CIA_REGISTER.timeOfDaySeconds, 0x07);
+      cia.write(CIA_REGISTER.timeOfDayTenths, 0x06);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(0);
+
+      cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(0);
+      cia.write(CIA_REGISTER.timeOfDayMinutes, 0x02);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(0);
+      cia.write(CIA_REGISTER.timeOfDaySeconds, 0x03);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(0);
+      cia.write(CIA_REGISTER.timeOfDayTenths, 0x04);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(
+        CIA_INTERRUPT_BIT.alarm,
+      );
+    },
+  );
+
+  it.each([MOS_6526_MODEL.original, MOS_6526_MODEL.revised])(
+    'raises the alarm source only when the final alarm write completes a match on %s',
+    (model) => {
+      const cia = new Mos6526('alarm write TOD', { model });
+      cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+      cia.write(CIA_REGISTER.timeOfDayMinutes, 0x02);
+      cia.write(CIA_REGISTER.timeOfDaySeconds, 0x03);
+      cia.write(CIA_REGISTER.timeOfDayTenths, 0x04);
+
+      cia.write(CIA_REGISTER.timerBControl, CIA_TIMER_CONTROL_BIT.alarmWrite);
+      cia.write(CIA_REGISTER.timeOfDayHours, 0x09);
+      cia.write(CIA_REGISTER.timeOfDayMinutes, 0x08);
+      cia.write(CIA_REGISTER.timeOfDaySeconds, 0x07);
+      cia.write(CIA_REGISTER.timeOfDayTenths, 0x06);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(0);
+
+      cia.write(CIA_REGISTER.timeOfDayHours, 0x01);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(0);
+      cia.write(CIA_REGISTER.timeOfDayMinutes, 0x02);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(0);
+      cia.write(CIA_REGISTER.timeOfDaySeconds, 0x03);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(0);
+      cia.write(CIA_REGISTER.timeOfDayTenths, 0x04);
+      expect(cia.read(CIA_REGISTER.interruptControl) & CIA_INTERRUPT_BIT.alarm).toBe(
+        CIA_INTERRUPT_BIT.alarm,
+      );
+    },
+  );
+
   it('detects only falling FLAG pin edges while a low level is held', () => {
     const cia = new Mos6526();
 

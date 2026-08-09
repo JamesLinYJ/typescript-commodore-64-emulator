@@ -659,6 +659,7 @@ export class Mos6526 extends IoDevice {
     const destination =
       (control & CIA_TIMER_CONTROL_BIT.alarmWrite) !== 0 ? this.alarm : this.timeOfDay;
     destination[index] = this.normalizeTimeOfDayValue(register, value);
+    this.checkAlarm();
 
     if (destination === this.timeOfDay) {
       if (register === CIA_REGISTER.timeOfDayHours) this.timeOfDayStopped = true;

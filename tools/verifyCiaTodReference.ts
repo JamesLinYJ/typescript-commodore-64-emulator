@@ -20,13 +20,13 @@ import { installPrg, parsePrg, PRG_START_MODE } from '../src/media/PrgLoader';
 import { PalFrameScheduler } from '../src/video/PalFrameScheduler';
 
 const UPSTREAM_TEST_REVISION = 46_176;
-const INVALID_DIGIT_TEST_COMMIT = 'ef8e8efe52f3d43df7acefad132c6506239bddee';
+const FIXED_TEST_COMMIT = 'ef8e8efe52f3d43df7acefad132c6506239bddee';
 const REFERENCE_DIRECTORY =
   `https://sourceforge.net/p/vice-emu/code/${UPSTREAM_TEST_REVISION}/tree/` + 'testprogs/CIA/tod';
-const INVALID_DIGIT_REFERENCE_DIRECTORY =
-  `https://raw.githubusercontent.com/libsidplayfp/VICE-testprogs/${INVALID_DIGIT_TEST_COMMIT}/` +
-  'CIA/tod';
+const FIXED_TEST_REFERENCE_DIRECTORY =
+  `https://raw.githubusercontent.com/libsidplayfp/VICE-testprogs/${FIXED_TEST_COMMIT}/` + 'CIA/tod';
 const FIX_TSEC_ONLY_ARGUMENT = '--fix-tsec-only';
+const ALARM_COND_ONLY_ARGUMENT = '--alarm-cond-only';
 const BASIC_BOOT_FRAME_LIMIT = 300;
 const RESULT_FRAME_LIMIT = 3_500;
 const PROGRAM_ENTRY_ADDRESS = 0x080d;
@@ -45,6 +45,7 @@ interface CiaTodReference {
   readonly exhaustiveMatrix?: boolean;
   readonly expectedScreenCodes: readonly number[] | undefined;
   readonly fileName: string;
+  readonly requiredSuccessWrites?: number;
   readonly sha256: string;
 }
 
@@ -106,6 +107,24 @@ const CIA_TOD_REFERENCES: readonly CiaTodReference[] = [
     fileName: 'fix-tsec.prg',
     sha256: '9d7c493003517b32135d1af56965dbc587eb68cbc3ddd029c78760bf241b64a3',
   },
+  {
+    cachePath: resolve('output/reference/cia-tod-alarm-cond.prg'),
+    description: 'alarm comparison after TOD register writes',
+    exhaustiveMatrix: true,
+    expectedScreenCodes: undefined,
+    fileName: 'alarm-cond.prg',
+    requiredSuccessWrites: 2,
+    sha256: '9f2d76ab4d39411e66957c7e04e3c2d2a20a695cbe2e455de2d0555bb4919b87',
+  },
+  {
+    cachePath: resolve('output/reference/cia-tod-alarm-cond2.prg'),
+    description: 'alarm comparison after alarm register writes',
+    exhaustiveMatrix: true,
+    expectedScreenCodes: undefined,
+    fileName: 'alarm-cond2.prg',
+    requiredSuccessWrites: 2,
+    sha256: '5e3e6b3f1ee2631c06a879fe4c554fbbb8eb6e0eb951fd1dea6c438b061e8d1c',
+  },
 ];
 
 const START_MODES = [PRG_START_MODE.basicRun, PRG_START_MODE.direct] as const;
@@ -162,7 +181,7 @@ async function loadReferenceProgram(reference: CiaTodReference): Promise<Uint8Ar
   }
 
   const url = reference.exhaustiveMatrix
-    ? `${INVALID_DIGIT_REFERENCE_DIRECTORY}/${reference.fileName}`
+    ? `${FIXED_TEST_REFERENCE_DIRECTORY}/${reference.fileName}`
     : `${REFERENCE_DIRECTORY}/${reference.fileName}?format=raw`;
   const response = await fetch(url);
   if (!response.ok) {
@@ -219,6 +238,7 @@ function runReference(
   model: Mos6526Model,
 ): {
   readonly bootFrames: number;
+  readonly resultWrites: readonly number[];
   readonly resultFrames: number;
   readonly screenSummary: string | undefined;
 } {
@@ -232,9 +252,10 @@ function runReference(
     startMode,
   });
 
-  let result: number | undefined;
+  const requiredSuccessWrites = reference.requiredSuccessWrites ?? 1;
+  const resultWrites: number[] = [];
   const stopObserving = memory.observeWrites(({ address, value }) => {
-    if (address === RESULT_ADDRESS) result ??= value;
+    if (address === RESULT_ADDRESS) resultWrites.push(value);
   });
 
   let resultFrames = 0;
@@ -242,7 +263,7 @@ function runReference(
     for (let frame = 1; frame <= RESULT_FRAME_LIMIT; frame += 1) {
       scheduler.runFrame();
       resultFrames = frame;
-      if (cpu.isJammed || result !== undefined) break;
+      if (cpu.isJammed || resultWrites.length >= requiredSuccessWrites) break;
     }
   } finally {
     stopObserving();
@@ -250,14 +271,25 @@ function runReference(
 
   const label = `${reference.fileName} ${startMode} ${model}`;
   if (cpu.isJammed) throw new Error(`${label} entered the 6510 JAM state.`);
-  if (result === undefined) {
-    throw new Error(`${label} did not write its result within ${RESULT_FRAME_LIMIT} PAL frames.`);
+  if (resultWrites.length < requiredSuccessWrites) {
+    throw new Error(
+      `${label} wrote ${resultWrites.length}/${requiredSuccessWrites} required results ` +
+        `within ${RESULT_FRAME_LIMIT} PAL frames.`,
+    );
   }
-  if (result === FAILURE_RESULT) {
-    throw new Error(`${label} reported a ${reference.description} mismatch.`);
-  }
-  if (result !== SUCCESS_RESULT) {
-    throw new Error(`${label} wrote unexpected result ${formatScreenCode(result)}.`);
+  const unexpectedResultIndex = resultWrites.findIndex((value) => value !== SUCCESS_RESULT);
+  if (unexpectedResultIndex >= 0) {
+    const result = resultWrites[unexpectedResultIndex] ?? FAILURE_RESULT;
+    if (result === FAILURE_RESULT) {
+      throw new Error(
+        `${label} result write ${unexpectedResultIndex + 1} reported a ` +
+          `${reference.description} mismatch.`,
+      );
+    }
+    throw new Error(
+      `${label} result write ${unexpectedResultIndex + 1} contained unexpected ` +
+        `${formatScreenCode(result)}.`,
+    );
   }
 
   const borderColor = memory.read(BORDER_COLOR_ADDRESS) & COLOR_MASK;
@@ -270,6 +302,7 @@ function runReference(
 
   return {
     bootFrames,
+    resultWrites,
     resultFrames,
     screenSummary: validateScreenSamples(memory, reference),
   };
@@ -277,13 +310,26 @@ function runReference(
 
 async function main(): Promise<void> {
   const argumentsProvided = process.argv.slice(2);
-  const unknownArgument = argumentsProvided.find((argument) => argument !== FIX_TSEC_ONLY_ARGUMENT);
-  if (unknownArgument !== undefined) {
-    throw new Error(`Unknown CIA TOD verifier argument: ${unknownArgument}.`);
+  if (argumentsProvided.length > 1) {
+    throw new Error('CIA TOD verifier accepts at most one target argument.');
   }
-  const references = argumentsProvided.includes(FIX_TSEC_ONLY_ARGUMENT)
-    ? CIA_TOD_REFERENCES.filter((reference) => reference.fileName === 'fix-tsec.prg')
-    : CIA_TOD_REFERENCES;
+  const targetArgument = argumentsProvided[0];
+  if (
+    targetArgument !== undefined &&
+    targetArgument !== FIX_TSEC_ONLY_ARGUMENT &&
+    targetArgument !== ALARM_COND_ONLY_ARGUMENT
+  ) {
+    throw new Error(`Unknown CIA TOD verifier argument: ${targetArgument}.`);
+  }
+  const references =
+    targetArgument === FIX_TSEC_ONLY_ARGUMENT
+      ? CIA_TOD_REFERENCES.filter((reference) => reference.fileName === 'fix-tsec.prg')
+      : targetArgument === ALARM_COND_ONLY_ARGUMENT
+        ? CIA_TOD_REFERENCES.filter(
+            (reference) =>
+              reference.fileName === 'alarm-cond.prg' || reference.fileName === 'alarm-cond2.prg',
+          )
+        : CIA_TOD_REFERENCES;
   const [firmware, ...programs] = await Promise.all([
     loadFirmware(),
     ...references.map(loadReferenceProgram),
@@ -304,14 +350,15 @@ async function main(): Promise<void> {
       for (const model of models) {
         const result = runReference(firmware, reference, program, startMode, model);
         const source = reference.exhaustiveMatrix
-          ? `commit ${INVALID_DIGIT_TEST_COMMIT}`
+          ? `commit ${FIXED_TEST_COMMIT}`
           : `revision ${UPSTREAM_TEST_REVISION}`;
         const screenSummary =
           result.screenSummary === undefined ? '' : `, samples ${result.screenSummary}`;
+        const resultSummary = result.resultWrites.map(formatScreenCode).join(', ');
         console.log(
           `PASS ${reference.fileName} ${source} (${startMode}, ${model}): ` +
             `${reference.description}, BASIC READY in ${result.bootFrames} PAL frames, ` +
-            `result in ${result.resultFrames} frames${screenSummary}.`,
+            `results [${resultSummary}] in ${result.resultFrames} frames${screenSummary}.`,
         );
         completedRuns += 1;
       }
@@ -319,8 +366,8 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `PASS CIA TOD suite revision ${UPSTREAM_TEST_REVISION}, invalid-digit commit ` +
-      `${INVALID_DIGIT_TEST_COMMIT}: ${completedRuns} fixed-hash runs across ` +
+    `PASS CIA TOD suite revision ${UPSTREAM_TEST_REVISION}, fixed-test commit ` +
+      `${FIXED_TEST_COMMIT}: ${completedRuns} fixed-hash runs across ` +
       `${references.length} programs.`,
   );
 }
