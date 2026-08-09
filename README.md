@@ -53,6 +53,7 @@ npm run verify:cia:ports
 npm run verify:cia:irqnmi
 npm run verify:cia:icr-rmw
 npm run verify:cia:timer-cascade
+npm run verify:cia:timer-icr
 npm run verify:cia:timer-output
 npm run verify:cia:tod
 npm run verify:vic
@@ -131,6 +132,12 @@ NMI 接管已开始的 IRQ 微序列，以及错过向量选择后必须先执�
 `cmp-b-counts-a-old.prg` 和 `cmp-b-counts-a-new.prg`，分别对照原版 6526 与修订版
 6526A/8521 真机采样。两项程序会穷举 Timer A 下溢驱动 Timer B 时 CPU 指令访问落在
 级联 STEP 前后的结果；门禁要求完整比较通过、写入 `$D7FF=$00` 并保持绿色边框。
+
+`verify:cia:timer-icr` 会运行固定 commit 与 SHA-256 的 `cia-timer-oldcias.prg` 和
+`cia-timer-newcias.prg`，分别对照原版 6526 与修订版 6526A 的 1 KiB 真机采样。
+两项程序覆盖 CIA1/2 的 Timer A/B，在中断屏蔽和启用状态下逐周期读取 ICR；其中旧芯片
+必须把 ICR 读取后紧邻的 Timer B 下溢碰撞保持到下一次 ICR 读取。完整采样一致后才允许
+写入 `$D7FF=$00` 并保持绿色边框。
 
 `verify:cia:timer-output` 会在两种 CIA 模型上运行 revision 46176 且 SHA-256 固定的
 `pb6pb7/main.prg`。程序把 Port B 配成输入，分别要求 PBON 开启时停止的 Timer A/B

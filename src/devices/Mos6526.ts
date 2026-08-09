@@ -613,12 +613,12 @@ export class Mos6526 extends IoDevice {
         this.countPinHigh);
     if (this.timerB.tickCycle()) {
       this.synchronizeStoppedTimerStartBit(CIA_REGISTER.timerBControl, this.timerB.running);
+      // 旧芯片会把“ICR 读取后一周期发生 Timer B 下溢”的碰撞保持到下一次 ICR 读取；
+      // 普通空闲周期不能清掉这项内部状态，只有新的下溢或实际读取才能覆盖它。
       this.timerBReadCollision =
         this.model === MOS_6526_MODEL.original &&
         this.lastInterruptControlReadCycle === this.elapsedCycleCount - 1;
       this.raiseInterrupt(CIA_INTERRUPT_BIT.timerB);
-    } else {
-      this.timerBReadCollision = false;
     }
     if (cascadeTimerB && timerAUnderflow) this.timerB.scheduleExternalStep();
     this.runInterruptPipelineCycle();

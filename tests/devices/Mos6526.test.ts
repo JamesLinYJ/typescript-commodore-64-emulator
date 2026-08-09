@@ -298,6 +298,25 @@ describe('Mos6526', () => {
     expect(cia.tick(1)).toBe(true);
   });
 
+  it('keeps the original Timer B read-underflow collision latched until the next ICR read', () => {
+    const original = new Mos6526('original', { model: MOS_6526_MODEL.original });
+    const revised = new Mos6526('revised', { model: MOS_6526_MODEL.revised });
+
+    for (const cia of [original, revised]) {
+      writeTimerB(cia, 1);
+      cia.write(
+        CIA_REGISTER.timerBControl,
+        CIA_TIMER_CONTROL_BIT.start | CIA_TIMER_CONTROL_BIT.forceLoad,
+      );
+      cia.tick(3);
+      expect(cia.read(CIA_REGISTER.interruptControl)).toBe(0);
+      cia.tick(2);
+    }
+
+    expect(original.read(CIA_REGISTER.interruptControl)).toBe(0);
+    expect(revised.read(CIA_REGISTER.interruptControl)).toBe(CIA_INTERRUPT_BIT.timerB);
+  });
+
   it('cancels an old-CIA interrupt still in flight during an ICR read-modify-write', () => {
     const cia = new Mos6526('original', { model: MOS_6526_MODEL.original });
     writeTimerA(cia, 1);
