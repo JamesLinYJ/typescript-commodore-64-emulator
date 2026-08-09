@@ -4,7 +4,7 @@
 //
 //   文件:       BrowserC64Input.ts
 //
-//   日期:       2026年07月17日
+//   日期:       2026年08月09日
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
@@ -12,6 +12,7 @@ import type { C64KeyboardMatrix } from '../devices/C64KeyboardMatrix';
 import type { RestoreKeyInput } from '../devices/RestoreKeyNmiCircuit';
 import {
   C64_CONTROL_PORT_DIGITAL_LINE,
+  C64_CONTROL_PORT_DIGITAL_LINE_MASK,
   type C64ControlPortDeviceConnection,
   type C64ControlPortNumber,
   type C64ControlPorts,
@@ -69,10 +70,11 @@ export class BrowserC64Input {
   private readonly keyboard: C64KeyboardMatrix;
   private readonly restoreKeyInput: RestoreKeyInput;
   private readonly activeBindings = new Map<string, ActiveHostBinding>();
+  private readonly directJoystickSources = new Map<number, number>();
   private readonly matrixPressCounts = new Map<string, number>();
   private readonly joystickPressCounts = new Map<number, number>();
   private joystickConnection: C64ControlPortDeviceConnection | undefined;
-  private joystickGroundedLines = 0;
+  private hostJoystickLines = 0;
   private joystickPortValue: C64ControlPortNumber | null = null;
   private shiftLockLatched = false;
   private visibilityDocument: Document | undefined;
@@ -103,8 +105,12 @@ export class BrowserC64Input {
     event.preventDefault();
   };
 
-  private readonly handleHostBlur = (): void => {
+  private readonly handleTargetBlur = (): void => {
     // 宿主可能不会再投递 keyup；机械锁存的 Shift Lock 则不属于瞬态绑定。
+    this.releaseHostBindings();
+  };
+
+  private readonly handleWindowBlur = (): void => {
     this.releaseAllBindings();
   };
 
@@ -133,24 +139,22 @@ export class BrowserC64Input {
     this.target = target;
     target.addEventListener('keydown', this.handleKeyDown);
     target.addEventListener('keyup', this.handleKeyUp);
-    target.addEventListener('blur', this.handleHostBlur);
+    target.addEventListener('blur', this.handleTargetBlur);
 
     this.visibilityDocument = this.resolveDocument(target);
     this.visibilityDocument?.addEventListener('visibilitychange', this.handleVisibilityChange);
     this.blurWindow = this.resolveWindow(target, this.visibilityDocument);
-    if (this.blurWindow !== target) this.blurWindow?.addEventListener('blur', this.handleHostBlur);
+    this.blurWindow?.addEventListener('blur', this.handleWindowBlur);
   }
 
   detach(): void {
     if (this.target) {
       this.target.removeEventListener('keydown', this.handleKeyDown);
       this.target.removeEventListener('keyup', this.handleKeyUp);
-      this.target.removeEventListener('blur', this.handleHostBlur);
+      this.target.removeEventListener('blur', this.handleTargetBlur);
     }
     this.visibilityDocument?.removeEventListener('visibilitychange', this.handleVisibilityChange);
-    if (this.blurWindow !== this.target) {
-      this.blurWindow?.removeEventListener('blur', this.handleHostBlur);
-    }
+    this.blurWindow?.removeEventListener('blur', this.handleWindowBlur);
     this.target = undefined;
     this.visibilityDocument = undefined;
     this.blurWindow = undefined;
@@ -171,12 +175,33 @@ export class BrowserC64Input {
     this.joystickConnection?.disconnect();
     this.joystickConnection = undefined;
     this.joystickPortValue = port;
-    this.joystickGroundedLines = 0;
+    this.hostJoystickLines = 0;
     if (port === null) return;
 
     const controlPort = port === 1 ? this.controlPorts.port1 : this.controlPorts.port2;
     this.joystickConnection = controlPort.attachDevice('Browser keyboard joystick');
     this.joystickConnection.setSignals(RELEASED_JOYSTICK_SIGNALS);
+  }
+
+  /** 原子替换单个直接输入源持有的五位操纵杆线路掩码。 */
+  setJoystickSourceLines(sourceId: number, groundedDigitalLines: number): boolean {
+    this.requireJoystickLines(groundedDigitalLines);
+    if (!this.joystickConnection) return false;
+    if (groundedDigitalLines === 0) return this.releaseJoystickSource(sourceId);
+    const previousLines = this.directJoystickSources.get(sourceId) ?? 0;
+    if (previousLines === groundedDigitalLines) return true;
+    this.directJoystickSources.set(sourceId, groundedDigitalLines);
+    this.updateJoystickSignals();
+    return true;
+  }
+
+  /** 仅释放指定直接输入源持有的线路。 */
+  releaseJoystickSource(sourceId: number): boolean {
+    const lines = this.directJoystickSources.get(sourceId);
+    if (lines === undefined) return false;
+    this.directJoystickSources.delete(sourceId);
+    this.updateJoystickSignals();
+    return true;
   }
 
   private createBinding(code: string): ActiveHostBinding | undefined {
@@ -211,14 +236,31 @@ export class BrowserC64Input {
     }
   }
 
-  private releaseAllBindings(): void {
+  private releaseHostBindings(): void {
     for (const binding of this.activeBindings.values()) this.releaseBinding(binding);
     this.activeBindings.clear();
     this.matrixPressCounts.clear();
-    this.joystickPressCounts.clear();
-    this.joystickGroundedLines = 0;
-    this.updateJoystickSignals();
     this.restoreKeyInput.setRestoreKeyPressed(false);
+  }
+
+  private releaseAllBindings(): void {
+    this.releaseHostBindings();
+    this.directJoystickSources.clear();
+    this.joystickPressCounts.clear();
+    this.hostJoystickLines = 0;
+    this.updateJoystickSignals();
+  }
+
+  private requireJoystickLines(lines: number): void {
+    if (
+      !Number.isInteger(lines) ||
+      lines < 0 ||
+      (lines & ~C64_CONTROL_PORT_DIGITAL_LINE_MASK) !== 0
+    ) {
+      throw new RangeError(
+        `Browser joystick lines must be a valid digital-line mask; got ${lines}.`,
+      );
+    }
   }
 
   private pressMatrixCode(code: string): void {
@@ -244,7 +286,7 @@ export class BrowserC64Input {
     const count = this.joystickPressCounts.get(bit) ?? 0;
     this.joystickPressCounts.set(bit, count + 1);
     if (count !== 0) return;
-    this.joystickGroundedLines |= bit;
+    this.hostJoystickLines |= bit;
     this.updateJoystickSignals();
   }
 
@@ -258,14 +300,16 @@ export class BrowserC64Input {
       return;
     }
     this.joystickPressCounts.delete(bit);
-    this.joystickGroundedLines &= ~bit;
+    this.hostJoystickLines &= ~bit;
     this.updateJoystickSignals();
   }
 
   private updateJoystickSignals(): void {
+    let directLines = 0;
+    for (const lines of this.directJoystickSources.values()) directLines |= lines;
     this.joystickConnection?.setSignals({
       ...RELEASED_JOYSTICK_SIGNALS,
-      groundedDigitalLines: this.joystickGroundedLines,
+      groundedDigitalLines: this.hostJoystickLines | directLines,
     });
   }
 

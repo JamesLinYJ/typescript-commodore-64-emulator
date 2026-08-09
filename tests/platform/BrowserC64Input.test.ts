@@ -4,7 +4,7 @@
 //
 //   文件:       BrowserC64Input.test.ts
 //
-//   日期:       2026年07月17日
+//   日期:       2026年08月09日
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
@@ -138,6 +138,10 @@ describe('BrowserC64Input', () => {
   it('releases held lines before moving the browser joystick to another port', () => {
     const { controlPorts, input, target } = createInput(2);
     target.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+    input.setJoystickSourceLines(
+      91,
+      C64_CONTROL_PORT_DIGITAL_LINE.up | C64_CONTROL_PORT_DIGITAL_LINE.left,
+    );
 
     input.setActiveJoystickPort(1);
 
@@ -145,6 +149,54 @@ describe('BrowserC64Input', () => {
     expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
     expect(controlPorts.port1.deviceAttached).toBe(true);
     expect(controlPorts.port1.deviceSignals.groundedDigitalLines).toBe(0);
+    expect(input.releaseJoystickSource(91)).toBe(false);
+    input.dispose();
+  });
+
+  it('merges independent direct joystick source masks until each source is released', () => {
+    const { controlPorts, input } = createInput(2);
+    const upLeft = C64_CONTROL_PORT_DIGITAL_LINE.up | C64_CONTROL_PORT_DIGITAL_LINE.left;
+
+    expect(input.setJoystickSourceLines(11, upLeft)).toBe(true);
+    expect(input.setJoystickSourceLines(12, C64_CONTROL_PORT_DIGITAL_LINE.fire)).toBe(true);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(
+      upLeft | C64_CONTROL_PORT_DIGITAL_LINE.fire,
+    );
+
+    expect(input.releaseJoystickSource(12)).toBe(true);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(upLeft);
+    expect(input.releaseJoystickSource(12)).toBe(false);
+    expect(input.releaseJoystickSource(11)).toBe(true);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
+    input.dispose();
+  });
+
+  it('atomically slides one direct joystick source between diagonal masks', () => {
+    const { controlPorts, input } = createInput(2);
+    const upLeft = C64_CONTROL_PORT_DIGITAL_LINE.up | C64_CONTROL_PORT_DIGITAL_LINE.left;
+    const upRight = C64_CONTROL_PORT_DIGITAL_LINE.up | C64_CONTROL_PORT_DIGITAL_LINE.right;
+
+    input.setJoystickSourceLines(27, upLeft);
+    input.setJoystickSourceLines(27, upRight);
+
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(upRight);
+    input.releaseJoystickSource(27);
+    input.dispose();
+  });
+
+  it('rejects direct joystick input when no joystick port is attached', () => {
+    const { input } = createInput(null);
+
+    expect(input.setJoystickSourceLines(1, C64_CONTROL_PORT_DIGITAL_LINE.fire)).toBe(false);
+    expect(input.releaseJoystickSource(1)).toBe(false);
+    input.dispose();
+  });
+
+  it('rejects bits outside the five control-port digital lines', () => {
+    const { input } = createInput(2);
+
+    expect(() => input.setJoystickSourceLines(1, 0x20)).toThrow(RangeError);
+    expect(() => input.setJoystickSourceLines(1, 1.5)).toThrow(RangeError);
     input.dispose();
   });
 
@@ -170,16 +222,48 @@ describe('BrowserC64Input', () => {
     input.dispose();
   });
 
+  it('preserves direct joystick sources when only the keyboard target loses focus', () => {
+    const screen = document.createElement('div');
+    const { controlPorts, input, target } = createInput(2, screen);
+    const downRight = C64_CONTROL_PORT_DIGITAL_LINE.down | C64_CONTROL_PORT_DIGITAL_LINE.right;
+    input.setJoystickSourceLines(31, downRight);
+
+    target.dispatchEvent(new FocusEvent('blur'));
+
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(downRight);
+    expect(input.releaseJoystickSource(31)).toBe(true);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
+    input.dispose();
+  });
+
+  it('releases every direct joystick source when detached from its keyboard target', () => {
+    const screen = document.createElement('div');
+    const { controlPorts, input } = createInput(2, screen);
+    input.setJoystickSourceLines(
+      41,
+      C64_CONTROL_PORT_DIGITAL_LINE.down | C64_CONTROL_PORT_DIGITAL_LINE.fire,
+    );
+
+    input.detach();
+
+    expect(input.isAttached).toBe(false);
+    expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
+    expect(input.releaseJoystickSource(41)).toBe(false);
+    input.dispose();
+  });
+
   it('releases active host bindings when the containing window loses focus', () => {
     const screen = document.createElement('div');
     const { controlPorts, input, keyboard, target } = createInput(2, screen);
     target.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyA' }));
     target.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowLeft' }));
+    input.setJoystickSourceLines(44, C64_CONTROL_PORT_DIGITAL_LINE.fire);
 
     window.dispatchEvent(new FocusEvent('blur'));
 
     expect(scanPortB(keyboard, 0xfd)).toBe(0xff);
     expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
+    expect(input.releaseJoystickSource(44)).toBe(false);
     input.dispose();
   });
 
@@ -188,18 +272,20 @@ describe('BrowserC64Input', () => {
     const { controlPorts, input, keyboard, target } = createInput(2, document);
     target.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyA' }));
     target.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight' }));
+    input.setJoystickSourceLines(45, C64_CONTROL_PORT_DIGITAL_LINE.fire);
 
     visibilityState.mockReturnValue('visible');
     document.dispatchEvent(new Event('visibilitychange'));
     expect(scanPortB(keyboard, 0xfd)).toBe(0xfb);
     expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(
-      C64_CONTROL_PORT_DIGITAL_LINE.right,
+      C64_CONTROL_PORT_DIGITAL_LINE.right | C64_CONTROL_PORT_DIGITAL_LINE.fire,
     );
 
     visibilityState.mockReturnValue('hidden');
     document.dispatchEvent(new Event('visibilitychange'));
     expect(scanPortB(keyboard, 0xfd)).toBe(0xff);
     expect(controlPorts.port2.deviceSignals.groundedDigitalLines).toBe(0);
+    expect(input.releaseJoystickSource(45)).toBe(false);
 
     visibilityState.mockRestore();
     input.dispose();

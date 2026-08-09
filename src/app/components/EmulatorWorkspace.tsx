@@ -2,6 +2,7 @@ import { useState, type CSSProperties, type PointerEvent, type RefObject } from 
 
 import type { EmulatorPhase, MessageTone } from '../useC64Emulator';
 import { PAL_VIDEO_STANDARD } from '../../video/palVideoStandard';
+import { TouchControls } from './TouchControls';
 
 interface ScreenStyle extends CSSProperties {
   '--screen-width': string;
@@ -18,6 +19,8 @@ interface EmulatorWorkspaceProps {
   readonly messageTone: MessageTone;
   readonly overBudgetFrames: number;
   readonly phase: EmulatorPhase;
+  readonly onJoystickLinesChange: (sourceId: number, groundedDigitalLines: number) => void;
+  readonly onJoystickRelease: (sourceId: number) => void;
   readonly programCounter: string;
   readonly renderP95Ms: number | undefined;
   readonly sampledFrames: number;
@@ -44,6 +47,8 @@ export function EmulatorWorkspace({
   messageTone,
   overBudgetFrames,
   phase,
+  onJoystickLinesChange,
+  onJoystickRelease,
   programCounter,
   renderP95Ms,
   sampledFrames,
@@ -108,6 +113,7 @@ export function EmulatorWorkspace({
                 ref={canvasRef}
                 className="emulator-canvas"
                 aria-label="Commodore 64 视频输出"
+                role="img"
               >
                 当前浏览器不支持 Canvas，无法显示 C64 画面。
               </canvas>
@@ -122,9 +128,24 @@ export function EmulatorWorkspace({
           </div>
         </div>
         <p id="c64-screen-help" className={`screen-focus-hint${screenFocused ? ' is-active' : ''}`}>
-          {screenFocused ? '键盘已接管 · 点击页面其他位置可释放焦点' : '点击屏幕以启用 C64 键盘'}
+          {screenFocused ? (
+            '键盘已接管 · 点击页面其他位置可释放焦点'
+          ) : (
+            <>
+              <span className="screen-focus-hint__desktop">点击屏幕以启用 C64 键盘</span>
+              <span className="screen-focus-hint__touch">
+                使用下方触控摇杆移动与开火 · 点按屏幕启用键盘
+              </span>
+            </>
+          )}
         </p>
       </div>
+
+      <TouchControls
+        disabled={!bootComplete || phase === 'error' || phase === 'loading'}
+        onLinesChange={onJoystickLinesChange}
+        onRelease={onJoystickRelease}
+      />
 
       <div className={`emulator-feedback${messageTone === 'error' ? ' is-error' : ''}`}>
         <p aria-live="polite">{message}</p>

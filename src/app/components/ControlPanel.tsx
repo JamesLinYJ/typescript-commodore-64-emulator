@@ -126,8 +126,9 @@ export function ControlPanel({
           onDrop={handleDrop}
         >
           <Upload aria-hidden="true" />
-          <span>拖放 PRG 文件到此处</span>
-          <small>或点击浏览选择文件</small>
+          <span className="drop-target__desktop-copy">拖放 PRG 文件到此处</span>
+          <span className="drop-target__mobile-copy">选择本地 PRG</span>
+          <small>点击浏览设备中的文件</small>
         </button>
       </section>
 

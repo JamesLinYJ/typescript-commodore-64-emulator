@@ -24,8 +24,10 @@ export interface C64EmulatorController extends EmulatorViewState {
   readonly isReady: boolean;
   readonly loadBuiltInProgram: (program: BundledProgramDescriptor) => Promise<boolean>;
   readonly loadLocalProgram: (file: File) => Promise<boolean>;
+  readonly releaseJoystickSource: (sourceId: number) => void;
   readonly reset: () => void;
   readonly stepFrame: () => void;
+  readonly setJoystickSourceLines: (sourceId: number, groundedDigitalLines: number) => void;
   readonly toggle: () => void;
 }
 
@@ -242,6 +244,17 @@ export function useC64Emulator(
     emulatorRef.current?.toggle();
   }, []);
 
+  const setJoystickSourceLines = useCallback(
+    (sourceId: number, groundedDigitalLines: number): void => {
+      emulatorRef.current?.input.setJoystickSourceLines(sourceId, groundedDigitalLines);
+    },
+    [],
+  );
+
+  const releaseJoystickSource = useCallback((sourceId: number): void => {
+    emulatorRef.current?.input.releaseJoystickSource(sourceId);
+  }, []);
+
   const reset = useCallback((): void => {
     const emulator = emulatorRef.current;
     if (!emulator) return;
@@ -273,10 +286,12 @@ export function useC64Emulator(
     overBudgetFrames,
     phase,
     programCounter,
+    releaseJoystickSource,
     renderP95Ms,
     reset,
     sampledFrames,
     stepFrame,
+    setJoystickSourceLines,
     toggle,
   };
 }

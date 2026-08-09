@@ -82,6 +82,8 @@ export function App() {
             messageTone={emulator.messageTone}
             overBudgetFrames={emulator.overBudgetFrames}
             phase={emulator.phase}
+            onJoystickLinesChange={emulator.setJoystickSourceLines}
+            onJoystickRelease={emulator.releaseJoystickSource}
             programCounter={emulator.programCounter}
             renderP95Ms={emulator.renderP95Ms}
             sampledFrames={emulator.sampledFrames}
