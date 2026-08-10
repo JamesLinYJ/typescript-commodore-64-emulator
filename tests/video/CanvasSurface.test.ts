@@ -9,51 +9,34 @@
 // --------------------------------------------------------------------------
 
 import { describe, expect, it } from 'vitest';
-import { copyArgbPixelsToRgbaWords } from '../../src/video/CanvasSurface';
+
+import { packRgbaPixel } from '../../src/shared/RgbaPixel';
+import { PixelFrameBuffer } from '../../src/video/PixelFrameBuffer';
 
 const PAL_OUTPUT_WIDTH = 403;
 const PAL_OUTPUT_HEIGHT = 284;
-const SENTINEL_BYTE = 0x5a;
 
-describe('copyArgbPixelsToRgbaWords', () => {
-  it('converts every PAL output pixel to exact RGBA bytes without touching adjacent pixels', () => {
+describe('Canvas framebuffer representation', () => {
+  it('stores every fixed PAL output pixel as exact RGBA bytes in the shared ImageData view', () => {
     const pixelCount = PAL_OUTPUT_WIDTH * PAL_OUTPUT_HEIGHT;
-    const source = new Uint32Array(pixelCount);
+    const imageBytes = new Uint8ClampedArray(pixelCount * 4);
+    const imageWords = new Uint32Array(imageBytes.buffer);
+    const frameBuffer = new PixelFrameBuffer(PAL_OUTPUT_WIDTH, PAL_OUTPUT_HEIGHT, imageWords);
 
-    for (let index = 0; index < source.length; index += 1) {
+    for (let index = 0; index < frameBuffer.pixels.length; index += 1) {
       const alpha = (index * 29 + 3) & 0xff;
       const red = (index * 31 + 5) & 0xff;
       const green = (index * 37 + 7) & 0xff;
       const blue = (index * 41 + 11) & 0xff;
-      source[index] = (alpha << 24) | (red << 16) | (green << 8) | blue;
+      frameBuffer.pixels[index] = packRgbaPixel(red, green, blue, alpha);
     }
 
-    const destinationBytes = new Uint8ClampedArray((pixelCount + 2) * 4);
-    destinationBytes.fill(SENTINEL_BYTE);
-    const destinationWords = new Uint32Array(destinationBytes.buffer);
-    const expectedBytes = destinationBytes.slice();
-
-    for (let index = 0; index < source.length; index += 1) {
-      const color = source[index];
-      if (color === undefined) throw new Error(`Missing source pixel ${index}.`);
-      const byteOffset = (index + 1) * 4;
-      expectedBytes[byteOffset] = (color >>> 16) & 0xff;
-      expectedBytes[byteOffset + 1] = (color >>> 8) & 0xff;
-      expectedBytes[byteOffset + 2] = color & 0xff;
-      expectedBytes[byteOffset + 3] = color >>> 24;
+    for (let index = 0; index < pixelCount; index += 1) {
+      const byteOffset = index * 4;
+      expect(imageBytes[byteOffset]).toBe((index * 31 + 5) & 0xff);
+      expect(imageBytes[byteOffset + 1]).toBe((index * 37 + 7) & 0xff);
+      expect(imageBytes[byteOffset + 2]).toBe((index * 41 + 11) & 0xff);
+      expect(imageBytes[byteOffset + 3]).toBe((index * 29 + 3) & 0xff);
     }
-
-    copyArgbPixelsToRgbaWords(source, destinationWords, 1);
-
-    const firstDifferentByte = destinationBytes.findIndex(
-      (value, index) => value !== expectedBytes[index],
-    );
-    expect(firstDifferentByte).toBe(-1);
-  });
-
-  it('rejects an offset that cannot hold the complete source', () => {
-    expect(() => copyArgbPixelsToRgbaWords(new Uint32Array(2), new Uint32Array(2), 1)).toThrow(
-      RangeError,
-    );
   });
 });

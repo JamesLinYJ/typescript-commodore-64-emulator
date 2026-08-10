@@ -7,9 +7,10 @@ export function ArchitectureStrip() {
       </p>
       <ol aria-label="运行架构">
         <li>Cpu6502</li>
-        <li>C64Memory</li>
-        <li>VIC-II / CIA</li>
-        <li>CanvasRenderer</li>
+        <li>C64Machine</li>
+        <li>VIC-II / CIA / SID</li>
+        <li>Realtime loop</li>
+        <li>Canvas / Audio sinks</li>
       </ol>
     </footer>
   );

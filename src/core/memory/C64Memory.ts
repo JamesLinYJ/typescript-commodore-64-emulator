@@ -86,9 +86,16 @@ export class C64Memory implements MemoryBus, VicMemoryBus {
   readonly datasette: Commodore1530Datasette;
 
   private readonly writeObservers = new Set<MemoryWriteObserver>();
+  private readonly stopObservingControlPortPaddles: () => void;
+  private readonly stopObservingIecBus: () => void;
+  private readonly stopObservingProcessorPort: () => void;
+  private readonly stopObservingTapeReadPulses: () => void;
+  private readonly stopObservingTapeSense: () => void;
+  private readonly stopObservingUserPortDeviceSignals: () => void;
   private cartridgePort: C64CartridgePort;
   private cpuBusCycleObserver: CpuBusCycleObserver | undefined;
   private cpuDataBusLatch = 0xff;
+  private disposed = false;
   private tapeReadLineHigh = true;
 
   constructor(
@@ -109,7 +116,7 @@ export class C64Memory implements MemoryBus, VicMemoryBus {
       userPort: this.userPort,
     });
     this.iecBus = options.iecBus ?? new IecBus();
-    this.iecBus.observe((transition) => {
+    this.stopObservingIecBus = this.iecBus.observe((transition) => {
       if (transition.changedLines.includes(IEC_LINE.serviceRequest)) {
         this.synchronizeCia1FlagPin();
       }
@@ -126,20 +133,30 @@ export class C64Memory implements MemoryBus, VicMemoryBus {
       model: options.ciaModels?.cia2 ?? DEFAULT_MOS_6526_MODEL,
       userPort: this.userPort,
     });
-    this.userPort.observeDeviceSignals(({ current, previous }) => {
-      this.synchronizeUserPortDeviceSignals(current, previous);
-    });
+    this.stopObservingUserPortDeviceSignals = this.userPort.observeDeviceSignals(
+      ({ current, previous }) => {
+        this.synchronizeUserPortDeviceSignals(current, previous);
+      },
+    );
     this.synchronizeUserPortDeviceSignals(this.userPort.deviceSignals, this.userPort.deviceSignals);
     this.synchronizeUserPortBoardSignals();
     this.tapePort = new C64TapePort();
     this.datasette = new Commodore1530Datasette(this.tapePort);
-    this.processorPort.observeOutputPins(() => this.synchronizeTapeHostSignals());
-    this.tapePort.observeSenseSwitch(({ closed }) => this.synchronizeTapeSense(closed));
-    this.tapePort.observeReadPulses(() => this.pulseTapeReadLine());
+    this.stopObservingProcessorPort = this.processorPort.observeOutputPins(() =>
+      this.synchronizeTapeHostSignals(),
+    );
+    this.stopObservingTapeSense = this.tapePort.observeSenseSwitch(({ closed }) =>
+      this.synchronizeTapeSense(closed),
+    );
+    this.stopObservingTapeReadPulses = this.tapePort.observeReadPulses(() =>
+      this.pulseTapeReadLine(),
+    );
     this.synchronizeTapeHostSignals();
     this.synchronizeTapeSense(this.tapePort.senseSwitchClosed);
     this.sid = new Sid(debug, options.sidModel ? { model: options.sidModel } : {});
-    this.controlPorts.observePaddleInputs(() => this.synchronizeSidPaddleInputs());
+    this.stopObservingControlPortPaddles = this.controlPorts.observePaddleInputs(() =>
+      this.synchronizeSidPaddleInputs(),
+    );
     this.synchronizeSidPaddleInputs();
     this.cartridgePort = options.cartridge ?? new DisconnectedC64CartridgePort();
     this.cartridgePort.reset();
@@ -353,6 +370,26 @@ export class C64Memory implements MemoryBus, VicMemoryBus {
     this.synchronizeSidPaddleInputs();
     this.vic.reset();
     this.cia2.setSerialBusResetAsserted(false);
+  }
+
+  /**
+   * 解除所有跨对象订阅和共享总线端口。共享 IecBus 可能比当前 C64 实例存活更久，
+   * 因此不能依靠垃圾回收器处理这些强引用。
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.stopObservingControlPortPaddles();
+    this.stopObservingIecBus();
+    this.stopObservingProcessorPort();
+    this.stopObservingTapeReadPulses();
+    this.stopObservingTapeSense();
+    this.stopObservingUserPortDeviceSignals();
+    this.writeObservers.clear();
+    this.cpuBusCycleObserver = undefined;
+    this.datasette.disconnect();
+    this.cia1.disconnect();
+    this.cia2.disconnect();
   }
 
   dump(address: number, length: number, bytesPerLine = 8): string {

@@ -87,6 +87,23 @@ export const CPU_OPERATION = {
   XAS: 75,
 } as const;
 
+const CPU_OPERATION_MNEMONIC_ALIAS: Readonly<Record<string, string>> = {
+  AXS_STORE: 'axs',
+  JAM: 'hlt',
+  SAX_SUBTRACT: 'sax',
+};
+
+/** 直接从 CPU_OPERATION 的名称和编号派生，避免再维护一份平行的操作编号顺序。 */
+export const CPU_OPERATION_MNEMONIC: readonly string[] = Object.freeze(
+  Object.entries(CPU_OPERATION).reduce<string[]>(
+    (mnemonics, [name, operation]) => {
+      mnemonics[operation] = CPU_OPERATION_MNEMONIC_ALIAS[name] ?? name.toLowerCase();
+      return mnemonics;
+    },
+    new Array<string>(Object.keys(CPU_OPERATION).length),
+  ),
+);
+
 export const CPU_CYCLE_TEMPLATE = {
   ACCUMULATOR: 0,
   BRANCH: 1,
@@ -141,6 +158,23 @@ export const CPU_ADDRESS_MODE = {
   ZPX: 11,
   ZPY: 12,
 } as const;
+
+/** 与 CPU_ADDRESS_MODE 编号同序的反汇编操作数字段。 */
+export const CPU_ADDRESS_MODE_OPERAND = [
+  '$aaaa',
+  '$aaaa,x',
+  '$aaaa,y',
+  'a',
+  '#$aa',
+  '',
+  '($aaaa)',
+  '($aa,x)',
+  '($aa),y',
+  '$aa',
+  '$aa',
+  '$aa,x',
+  '$aa,y',
+] as const;
 
 export const CPU_MEMORY_ACCESS = {
   NONE: 0,

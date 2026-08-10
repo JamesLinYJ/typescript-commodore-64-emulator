@@ -19,9 +19,16 @@ import {
   useC64Emulator,
   type C64EmulatorFactory,
 } from '../../src/app/useC64Emulator';
+import type { C64ProgramLoadOptions } from '../../src/core/C64Emulator';
+import { PRG_START_MODE } from '../../src/media/PrgLoader';
 
 const createEmulator = vi.fn<C64EmulatorFactory>();
 type EmulatorInstance = Awaited<ReturnType<C64EmulatorFactory>>;
+type FakeProgramLoader = (
+  input: ArrayBuffer | Uint8Array,
+  options: C64ProgramLoadOptions,
+  signal: AbortSignal,
+) => Promise<void>;
 
 interface Deferred<Value> {
   readonly promise: Promise<Value>;
@@ -38,7 +45,7 @@ interface FakeEmulator {
     readonly setJoystickSourceLines: ReturnType<typeof vi.fn>;
   };
   readonly loadProgram: ReturnType<typeof vi.fn>;
-  readonly loadProgramBytesAsync: ReturnType<typeof vi.fn>;
+  readonly loadProgramBytesAsync: ReturnType<typeof vi.fn<FakeProgramLoader>>;
   readonly on: ReturnType<typeof vi.fn>;
   readonly registers: { readonly programCounter: number };
   readonly reset: ReturnType<typeof vi.fn>;
@@ -77,7 +84,7 @@ function createFakeEmulator(): FakeEmulator {
       setJoystickSourceLines: vi.fn(),
     },
     loadProgram: vi.fn(() => Promise.resolve()),
-    loadProgramBytesAsync: vi.fn(() => Promise.resolve()),
+    loadProgramBytesAsync: vi.fn<FakeProgramLoader>(() => Promise.resolve()),
     on: vi.fn((eventName: string, listener: (payload: unknown) => void) => {
       const eventListeners = listeners.get(eventName) ?? new Set<(payload: unknown) => void>();
       eventListeners.add(listener);
@@ -98,7 +105,7 @@ function createFakeEmulator(): FakeEmulator {
   return emulator;
 }
 
-function Harness() {
+function Harness({ localProgram }: { readonly localProgram?: File }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const keyboardTargetRef = useRef<HTMLDivElement>(null);
   const controller = useC64Emulator(canvasRef, keyboardTargetRef, createEmulator);
@@ -109,6 +116,11 @@ function Harness() {
       <button type="button" onClick={controller.retryInitialization}>
         Test retry
       </button>
+      {localProgram ? (
+        <button type="button" onClick={() => void controller.loadLocalProgram(localProgram)}>
+          Test local PRG
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -209,6 +221,44 @@ describe('useC64Emulator initialization recovery', () => {
     });
     expect(staleEmulator.dispose).toHaveBeenCalledOnce();
     expect(staleEmulator.start).not.toHaveBeenCalled();
+  });
+
+  it('uses BASIC RUN explicitly for local PRGs and exposes an incompatible load address', async () => {
+    const emulator = createFakeEmulator();
+    const rejection = new Error(
+      'BASIC RUN requires a PRG load address of $0801; machine-code.prg starts at $C000.',
+    );
+    emulator.loadProgramBytesAsync.mockRejectedValueOnce(rejection);
+    createEmulator.mockResolvedValue(emulator as unknown as EmulatorInstance);
+    const localProgram = new File([Uint8Array.of(0x00, 0xc0, 0x60)], 'machine-code.prg');
+
+    const container = document.querySelector<HTMLElement>('#test-root');
+    if (!container) throw new Error('Test root did not mount.');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness localProgram={localProgram} />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(emulator.start).toHaveBeenCalledOnce());
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button:last-of-type')?.click();
+      await vi.waitFor(() => expect(emulator.loadProgramBytesAsync).toHaveBeenCalledOnce());
+    });
+
+    const call = emulator.loadProgramBytesAsync.mock.calls[0];
+    if (!call) throw new Error('Local PRG loader was not called.');
+    const [bytes, options, signal] = call;
+    expect(bytes).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint8Array(bytes)).toEqual(Uint8Array.of(0x00, 0xc0, 0x60));
+    expect(options).toEqual({ startMode: PRG_START_MODE.basicRun });
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(container.querySelector('output')?.textContent).toBe(rejection.message);
+    expect(container.querySelector('output')?.dataset['phase']).toBe('running');
+
+    act(() => root.unmount());
   });
 
   it('maps only initialization failures to actionable Chinese messages', () => {

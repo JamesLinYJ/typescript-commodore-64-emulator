@@ -126,6 +126,9 @@ describe('C64Machine', () => {
     const { cpu, memory } = createC64System();
     const peripheral = {
       cycles: 0,
+      advanceHostCycle(): void {
+        this.cycles += 1;
+      },
       advanceHostCycles(cycles: number): void {
         this.cycles += cycles;
       },

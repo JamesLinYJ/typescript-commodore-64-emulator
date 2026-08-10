@@ -1175,6 +1175,12 @@ function runViceIecDelayReference(
   const c64Cpu = new Cpu6502(memory);
   const drive = new Commodore1541Drive({ deviceNumber: 8, iecBus, rom: driveRom });
   const zeroLeadCycleGuard = {
+    advanceHostCycle: (): void => {
+      if (drive.clock.leadCycles === 0) return;
+      throw new Error(
+        `VICE IEC delay test has 1541/target delta ${drive.clock.leadCycles} after a host cycle.`,
+      );
+    },
     advanceHostCycles: (): void => {
       if (drive.clock.leadCycles === 0) return;
       throw new Error(

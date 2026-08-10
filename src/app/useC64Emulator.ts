@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 
 import type { C64Emulator, C64EmulatorOptions } from '../core/C64Emulator';
 import type { BundledProgramDescriptor } from '../media/BundledProgramCatalog';
+import { PRG_START_MODE } from '../media/PrgLoader';
 import type { WebAudioOutputStatus } from '../platform/WebAudioOutput';
 import { hex } from '../shared/numbers';
 import { PAL_VIDEO_STANDARD } from '../video/palVideoStandard';
@@ -245,6 +246,7 @@ export function useC64Emulator(
 
       try {
         await emulator.loadProgram(`${import.meta.env.BASE_URL}programs/${program.file}`, {
+          expectedSha256: program.sha256,
           signal: request.signal,
         });
         return operationIdRef.current === operationId;
@@ -282,7 +284,11 @@ export function useC64Emulator(
         ) {
           return false;
         }
-        await emulator.loadProgramBytesAsync(bytes, {}, request.signal);
+        await emulator.loadProgramBytesAsync(
+          bytes,
+          { startMode: PRG_START_MODE.basicRun },
+          request.signal,
+        );
         return true;
       } catch (error: unknown) {
         if (!isAbortError(error)) showOperationError(error);

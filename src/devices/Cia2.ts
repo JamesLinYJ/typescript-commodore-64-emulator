@@ -79,6 +79,15 @@ export class Cia2 extends Mos6526 {
     this.updateIecOutputs();
   }
 
+  /** 释放 CIA2 在共享 IEC 总线上的主机端口；用于整机实例销毁。 */
+  disconnect(): void {
+    const port = this.hostIecPort;
+    if (!port) return;
+    this.hostIecPort = undefined;
+    port.disconnect();
+    this.userPortValue = undefined;
+  }
+
   private updateVicBank(portAOutput: number): void {
     this.vicBankAddress =
       ((~portAOutput & CIA2_VIC_BANK.selectMask) << CIA2_VIC_BANK.addressShift) & 0xffff;

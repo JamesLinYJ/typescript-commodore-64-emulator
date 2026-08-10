@@ -51,6 +51,8 @@ const C64_BASIC_AUTOSTART_LAYOUT = {
 const BASIC_RUN_COMMAND = Uint8Array.of(0x52, 0x55, 0x4e, 0x0d);
 const C64_ADDRESS_SPACE_SIZE = 0x1_0000;
 
+export const BASIC_PRG_LOAD_ADDRESS = C64_BASIC_AUTOSTART_LAYOUT.textStart;
+
 export function parsePrg(input: ArrayBuffer | Uint8Array): PrgImage {
   const file = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (file.length < 2) throw new RangeError('A PRG file must include a two-byte load address.');
@@ -73,7 +75,7 @@ export function installPrg(
   const startMode = requirePrgStartMode(options.startMode ?? PRG_START_MODE.none);
   const entryAddress = options.entryAddress ?? image.loadAddress;
 
-  if (startMode === PRG_START_MODE.direct) assertC64Address(entryAddress, 'PRG entry');
+  assertPrgStartCompatibility(image, { entryAddress, startMode });
   if (startMode === PRG_START_MODE.basicRun) validateBasicAutostart(memory, endAddress);
 
   memory.injectRamImage(image.loadAddress, image.bytes);
@@ -91,6 +93,27 @@ export function installPrg(
     size: image.bytes.length,
     startMode,
   };
+}
+
+/**
+ * 在复位、暂停或 RAM 注入之前验证启动策略。这个纯验证入口让上层控制器能原子拒绝
+ * 被误选为 BASIC RUN 的机器码 PRG，不会先改变整机状态再发现装载地址不兼容。
+ */
+export function assertPrgStartCompatibility(
+  image: PrgImage,
+  options: InstallPrgOptions = {},
+): void {
+  const startMode = requirePrgStartMode(options.startMode ?? PRG_START_MODE.none);
+  if (startMode === PRG_START_MODE.basicRun && image.loadAddress !== BASIC_PRG_LOAD_ADDRESS) {
+    throw new Error(
+      `BASIC RUN requires a PRG loaded at $${BASIC_PRG_LOAD_ADDRESS.toString(16).padStart(4, '0')}; ` +
+        `this PRG loads at $${image.loadAddress.toString(16).padStart(4, '0')}. ` +
+        'Choose direct execution with an explicit entry address, or load without starting.',
+    );
+  }
+  if (startMode === PRG_START_MODE.direct) {
+    assertC64Address(options.entryAddress ?? image.loadAddress, 'PRG entry');
+  }
 }
 
 function assertPrgRange(loadAddress: number, size: number): void {

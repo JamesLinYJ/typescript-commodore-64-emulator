@@ -1,6 +1,6 @@
 // +-------------------------------------------------------------------------
 //
-//   TypeScript Commodore 64 模拟器 - 浏览器音频输出生命周期测试
+//   TypeScript Commodore 64 模拟器 - AudioWorklet PCM 流输出测试
 //
 //   文件:       WebAudioOutput.test.ts
 //
@@ -10,28 +10,41 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { WebAudioOutput, type WebAudioOutputStatus } from '../../src/platform/WebAudioOutput';
+import {
+  WebAudioOutput,
+  type AudioContextFactory,
+  type PcmAudioNode,
+  type WebAudioOutputOptions,
+  type WebAudioOutputStatus,
+} from '../../src/platform/WebAudioOutput';
+import type {
+  PcmAudioStreamMetrics,
+  PcmAudioWorkletCommand,
+} from '../../src/platform/PcmAudioWorkletProtocol';
 
-class FakeAudioSource extends EventTarget {
-  buffer: AudioBuffer | null = null;
-  readonly startTimes: number[] = [];
-  readonly stop = vi.fn((): void => {
-    this.dispatchEvent(new Event('ended'));
+class FakeMessagePort extends EventTarget {
+  readonly messages: unknown[] = [];
+  readonly close = vi.fn();
+  readonly start = vi.fn();
+  readonly postMessage = vi.fn((message: unknown): void => {
+    this.messages.push(message);
   });
 
-  connect(): void {
-    return undefined;
-  }
-
-  start(when = 0): void {
-    this.startTimes.push(when);
+  emitMetrics(metrics: PcmAudioStreamMetrics): void {
+    this.dispatchEvent(new MessageEvent('message', { data: metrics }));
   }
 }
 
+class FakeAudioWorkletNode implements PcmAudioNode {
+  readonly port = new FakeMessagePort();
+  readonly disconnect = vi.fn();
+}
+
 class FakeAudioContext extends EventTarget {
-  currentTime = 0;
-  readonly destination = {} as AudioDestinationNode;
-  readonly sources: FakeAudioSource[] = [];
+  readonly addWorkletModule = vi.fn((): Promise<void> => Promise.resolve());
+  readonly node = new FakeAudioWorkletNode();
+  readonly createPcmNode = vi.fn((): PcmAudioNode => this.node);
+  readonly sampleRate: number;
   state: AudioContextState = 'suspended';
   resumeError: Error | undefined;
   readonly close = vi.fn((): Promise<void> => {
@@ -45,49 +58,58 @@ class FakeAudioContext extends EventTarget {
     return Promise.resolve();
   });
 
-  createBuffer(_channels: number, length: number, sampleRate: number): AudioBuffer {
-    const samples = new Float32Array(length);
-    return {
-      duration: length / sampleRate,
-      getChannelData: () => samples,
-    } as unknown as AudioBuffer;
-  }
-
-  createBufferSource(): AudioBufferSourceNode {
-    const source = new FakeAudioSource();
-    this.sources.push(source);
-    return source as unknown as AudioBufferSourceNode;
+  constructor(sampleRate = 44_100) {
+    super();
+    this.sampleRate = sampleRate;
   }
 }
 
-function asAudioContext(context: FakeAudioContext): AudioContext {
-  return context as unknown as AudioContext;
+interface AudioHarness {
+  readonly contextFactory: ReturnType<typeof vi.fn<AudioContextFactory>>;
+  readonly node: FakeAudioWorkletNode;
+  readonly output: WebAudioOutput;
+}
+
+function createHarness(
+  context = new FakeAudioContext(),
+  target = new EventTarget(),
+  overrides: Partial<WebAudioOutputOptions> = {},
+): AudioHarness {
+  const contextFactory = vi.fn<AudioContextFactory>(() => context);
+  const output = new WebAudioOutput(target, {
+    contextFactory,
+    sampleRateHz: 44_100,
+    workletModuleUrl: 'test-c64-pcm-worklet.js',
+    ...overrides,
+  });
+  return { contextFactory, node: context.node, output };
 }
 
 describe('WebAudioOutput', () => {
-  it('activates on the first host gesture and publishes state transitions', async () => {
+  it('loads and connects one AudioWorklet after the first host gesture', async () => {
     const target = new EventTarget();
     const context = new FakeAudioContext();
-    const factory = vi.fn(() => asAudioContext(context));
-    const output = new WebAudioOutput(target, factory);
+    const { contextFactory, output } = createHarness(context, target);
     const statuses: WebAudioOutputStatus[] = [];
     output.observeStatus((status) => statuses.push(status));
 
     expect(output.status.state).toBe('inactive');
-    expect(factory).not.toHaveBeenCalled();
+    expect(contextFactory).not.toHaveBeenCalled();
     target.dispatchEvent(new Event('pointerdown'));
 
     await vi.waitFor(() => expect(output.status.state).toBe('running'));
-    expect(factory).toHaveBeenCalledOnce();
+    expect(contextFactory).toHaveBeenCalledWith(44_100);
+    expect(context.addWorkletModule).toHaveBeenCalledWith('test-c64-pcm-worklet.js');
+    expect(context.createPcmNode).toHaveBeenCalledOnce();
     expect(context.resume).toHaveBeenCalledOnce();
     expect(statuses.map(({ state }) => state)).toEqual(['inactive', 'suspended', 'running']);
     output.dispose();
   });
 
-  it('turns resume rejection into an observable retryable error', async () => {
+  it('turns resume rejection into an observable retryable error without duplicating the node', async () => {
     const context = new FakeAudioContext();
     context.resumeError = new Error('gesture was rejected');
-    const output = new WebAudioOutput(new EventTarget(), () => asAudioContext(context));
+    const { output } = createHarness(context);
 
     await expect(output.activate()).resolves.toMatchObject({
       error: context.resumeError,
@@ -97,68 +119,156 @@ describe('WebAudioOutput', () => {
     context.resumeError = undefined;
     await expect(output.activate()).resolves.toMatchObject({ state: 'running' });
     expect(context.resume).toHaveBeenCalledTimes(2);
+    expect(context.addWorkletModule).toHaveBeenCalledOnce();
+    expect(context.createPcmNode).toHaveBeenCalledOnce();
     output.dispose();
   });
 
-  it('coalesces concurrent activation requests into one resume operation', async () => {
+  it('coalesces concurrent activation requests into one worklet initialization', async () => {
     const context = new FakeAudioContext();
-    let finishResume: (() => void) | undefined;
-    context.resume.mockImplementationOnce(
+    let finishModuleLoad: (() => void) | undefined;
+    context.addWorkletModule.mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
-          finishResume = () => {
-            context.state = 'running';
-            context.dispatchEvent(new Event('statechange'));
-            resolve();
-          };
+          finishModuleLoad = resolve;
         }),
     );
-    const output = new WebAudioOutput(new EventTarget(), () => asAudioContext(context));
+    const { output } = createHarness(context);
 
     const firstActivation = output.activate();
     const secondActivation = output.activate();
 
     expect(secondActivation).toBe(firstActivation);
-    expect(context.resume).toHaveBeenCalledOnce();
-    finishResume?.();
+    expect(context.addWorkletModule).toHaveBeenCalledOnce();
+    finishModuleLoad?.();
     await expect(Promise.all([firstActivation, secondActivation])).resolves.toEqual([
       { state: 'running' },
       { state: 'running' },
     ]);
+    expect(context.createPcmNode).toHaveBeenCalledOnce();
+    expect(context.resume).toHaveBeenCalledOnce();
     output.dispose();
   });
 
-  it('does not create audio buffers before activation or while suspended', () => {
+  it('does not stream samples before activation or while the context is suspended', async () => {
     const context = new FakeAudioContext();
-    const output = new WebAudioOutput(new EventTarget(), () => asAudioContext(context));
+    context.resumeError = new Error('remain suspended');
+    const { node, output } = createHarness(context);
 
     output.enqueue(new Float32Array(882), 44_100);
-    expect(context.sources).toHaveLength(0);
+    expect(node.port.messages).toHaveLength(0);
+    await output.activate();
+    output.enqueue(new Float32Array(882), 44_100);
+    expect(node.port.messages).toHaveLength(0);
     output.dispose();
   });
 
-  it('clears scheduled sources and resets the next start to current audio time', async () => {
+  it('posts batched PCM chunks and clears the bounded worklet stream', async () => {
     const context = new FakeAudioContext();
     context.state = 'running';
-    context.currentTime = 10;
-    const output = new WebAudioOutput(new EventTarget(), () => asAudioContext(context));
+    const { node, output } = createHarness(context);
     await output.activate();
 
-    output.enqueue(new Float32Array(882), 44_100);
-    context.currentTime = 10.005;
-    output.enqueue(new Float32Array(882), 44_100);
-    expect(context.sources.map(({ startTimes }) => startTimes[0])).toEqual([10, 10.02]);
-
+    const first = Float32Array.of(-0.5, 0, 0.5);
+    const second = Float32Array.of(0.25, -0.25);
+    output.enqueue(first, 44_100);
+    output.enqueue(second, 44_100);
     output.clear();
-    expect(context.sources.every(({ stop }) => stop.mock.calls.length === 1)).toBe(true);
-    context.currentTime = 10.01;
-    output.enqueue(new Float32Array(882), 44_100);
-    expect(context.sources[2]?.startTimes[0]).toBe(10.01);
+
+    const commands = node.port.messages as PcmAudioWorkletCommand[];
+    expect(commands.map(({ type }) => type)).toEqual(['samples', 'samples', 'clear']);
+    expect(commands[0]).toMatchObject({ samples: first, type: 'samples' });
+    expect(commands[1]).toMatchObject({ samples: second, type: 'samples' });
+    expect(output.streamMetrics.bufferedSamples).toBe(0);
+    expect(context.resume).not.toHaveBeenCalled();
+    output.dispose();
+  });
+
+  it('drops stale PCM when the browser suspends audio and resumes the same worklet cleanly', async () => {
+    const context = new FakeAudioContext();
+    context.state = 'running';
+    const { node, output } = createHarness(context);
+    await output.activate();
+
+    const beforeBackground = Float32Array.of(0.25, -0.25);
+    output.enqueue(beforeBackground, 44_100);
+    context.state = 'suspended';
+    context.dispatchEvent(new Event('statechange'));
+    output.enqueue(Float32Array.of(0.75), 44_100);
+
+    expect(output.status.state).toBe('suspended');
+    expect((node.port.messages as PcmAudioWorkletCommand[]).map(({ type }) => type)).toEqual([
+      'samples',
+      'clear',
+    ]);
+
+    await expect(output.activate()).resolves.toEqual({ state: 'running' });
+    const afterBackground = Float32Array.of(-0.5, 0.5);
+    output.enqueue(afterBackground, 44_100);
+
+    const commands = node.port.messages as PcmAudioWorkletCommand[];
+    expect(commands.map(({ type }) => type)).toEqual(['samples', 'clear', 'samples']);
+    expect(commands[2]).toMatchObject({ samples: afterBackground, type: 'samples' });
+    expect(context.addWorkletModule).toHaveBeenCalledOnce();
+    expect(context.createPcmNode).toHaveBeenCalledOnce();
+    expect(context.resume).toHaveBeenCalledOnce();
+    output.dispose();
+  });
+
+  it('publishes explicit overrun and underrun metrics from the worklet', async () => {
+    const context = new FakeAudioContext();
+    context.state = 'running';
+    const { node, output } = createHarness(context);
+    await output.activate();
+
+    node.port.emitMetrics({
+      bufferedSamples: 512,
+      capacitySamples: 22_050,
+      clearCount: 3,
+      overrunSamples: 17,
+      type: 'metrics',
+      underrunSamples: 128,
+    });
+
+    expect(output.streamMetrics).toEqual({
+      bufferedSamples: 512,
+      capacitySamples: 22_050,
+      clearCount: 3,
+      overrunSamples: 17,
+      type: 'metrics',
+      underrunSamples: 128,
+    });
+    output.dispose();
+  });
+
+  it('rejects a mismatched hardware sample rate instead of silently resampling', async () => {
+    const context = new FakeAudioContext(48_000);
+    const { output } = createHarness(context);
+
+    const status = await output.activate();
+    expect(status.state).toBe('error');
+    expect(status.error?.message).toContain('48000');
+    expect(context.addWorkletModule).not.toHaveBeenCalled();
+    expect(context.createPcmNode).not.toHaveBeenCalled();
+    output.dispose();
+  });
+
+  it('reports module-load failure without falling back to per-buffer sources', async () => {
+    const context = new FakeAudioContext();
+    const moduleError = new Error('worklet module rejected');
+    context.addWorkletModule.mockRejectedValueOnce(moduleError);
+    const { output } = createHarness(context);
+
+    await expect(output.activate()).resolves.toEqual({ error: moduleError, state: 'error' });
+    expect(context.createPcmNode).not.toHaveBeenCalled();
     output.dispose();
   });
 
   it('reports an unavailable Web Audio implementation without throwing', async () => {
-    const output = new WebAudioOutput(new EventTarget(), () => undefined);
+    const output = new WebAudioOutput(new EventTarget(), {
+      contextFactory: () => undefined,
+      workletModuleUrl: 'test-c64-pcm-worklet.js',
+    });
 
     await expect(output.activate()).resolves.toEqual({ state: 'unavailable' });
     expect(output.status.state).toBe('unavailable');

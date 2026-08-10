@@ -14,6 +14,7 @@ import { Cpu6502 } from '../../src/core/cpu/Cpu6502';
 import {
   CPU_ADDRESS_MODE,
   CPU_ADDRESS_MODE_LENGTH,
+  CPU_ADDRESS_MODE_OPERAND,
   CPU_CYCLE_TEMPLATE,
   CPU_CYCLE_TEMPLATE_BASE_CYCLES,
   CPU_MEMORY_ACCESS,
@@ -28,11 +29,79 @@ import {
   CPU_OPCODE_PLAN_PAGE_RULE_SHIFT,
   CPU_OPCODE_PLAN_TEMPLATE_MASK,
   CPU_OPERATION,
+  CPU_OPERATION_MNEMONIC,
   CPU_PAGE_RULE,
 } from '../../src/core/cpu/CpuOpcodeMetadata';
 import { TestMemory } from '../helpers/createTestSystem';
 
 const CPU_OPCODE_COUNT = 0x100;
+const MAXIMUM_INSTRUCTION_CYCLES = 8;
+
+interface BusAccess {
+  readonly address: number;
+  readonly type: 'read' | 'write';
+  readonly value: number;
+}
+
+class TracingMemory extends TestMemory {
+  readonly accesses: BusAccess[] = [];
+
+  override read(address: number): number {
+    const normalizedAddress = address & 0xffff;
+    const value = super.read(normalizedAddress);
+    this.accesses.push({ address: normalizedAddress, type: 'read', value });
+    return value;
+  }
+
+  override write(address: number, value: number): void {
+    const normalizedAddress = address & 0xffff;
+    const normalizedValue = value & 0xff;
+    this.accesses.push({ address: normalizedAddress, type: 'write', value: normalizedValue });
+    super.write(normalizedAddress, normalizedValue);
+  }
+
+  clearTrace(): void {
+    this.accesses.length = 0;
+  }
+}
+
+const EQUIVALENCE_STATES = [
+  { accumulator: 0x56, indexX: 0x91, indexY: 0x37, stackPointer: 0xc4, status: 0x24 },
+  { accumulator: 0xa9, indexX: 0x17, indexY: 0xb3, stackPointer: 0x42, status: 0xff },
+] as const;
+
+function createOpcodeSystem(
+  opcode: number,
+  stateIndex: number,
+): {
+  readonly cpu: Cpu6502;
+  readonly memory: TracingMemory;
+} {
+  const memory = new TracingMemory();
+  for (let address = 0; address < memory.bytes.length; address += 1) {
+    memory.bytes[address] = (address * 29 + stateIndex * 71 + 0x43) & 0xff;
+  }
+  const programCounter = 0x20fd;
+  memory.bytes[programCounter] = opcode;
+  memory.bytes[programCounter + 1] = 0x7f;
+  memory.bytes[programCounter + 2] = 0x20;
+  memory.bytes[0xfffc] = programCounter & 0xff;
+  memory.bytes[0xfffd] = programCounter >>> 8;
+
+  const cpu = new Cpu6502(memory);
+  const state = EQUIVALENCE_STATES[stateIndex];
+  if (!state) throw new RangeError(`Missing equivalence state ${stateIndex}.`);
+  cpu.restoreRegisters({
+    accumulator: state.accumulator,
+    indexX: state.indexX,
+    indexY: state.indexY,
+    programCounter,
+    stackPointer: state.stackPointer,
+    status: state.status,
+  });
+  memory.clearTrace();
+  return { cpu, memory };
+}
 
 const DYNAMIC_PAGE_RULE_OPCODES = [
   [CPU_PAGE_RULE.BRANCH_TAKEN_THEN_CROSS, [0x10, 0x30, 0x50, 0x70, 0x90, 0xb0, 0xd0, 0xf0]],
@@ -69,6 +138,8 @@ describe('CpuOpcodeMetadata', () => {
     expect(CPU_OPCODE_OPERATION).toHaveLength(CPU_OPCODE_COUNT);
     expect(CPU_OPCODE_PLAN).toHaveLength(CPU_OPCODE_COUNT);
     expect(CPU_OPCODE_FLAGS).toHaveLength(CPU_OPCODE_COUNT);
+    expect(CPU_OPERATION_MNEMONIC).toHaveLength(Object.keys(CPU_OPERATION).length);
+    expect(CPU_ADDRESS_MODE_OPERAND).toHaveLength(Object.keys(CPU_ADDRESS_MODE).length);
 
     const operationCount = Object.keys(CPU_OPERATION).length;
     const templateCount = Object.keys(CPU_CYCLE_TEMPLATE).length;
@@ -123,6 +194,30 @@ describe('CpuOpcodeMetadata', () => {
       expect(decodePlan(plan ?? 0).pageRule, `opcode $${opcode.toString(16)}`).toBe(
         expectedRules[opcode],
       );
+    }
+  });
+
+  it('keeps atomic and cycle execution equivalent for all 256 opcodes', () => {
+    for (let stateIndex = 0; stateIndex < EQUIVALENCE_STATES.length; stateIndex += 1) {
+      for (let opcode = 0; opcode < CPU_OPCODE_COUNT; opcode += 1) {
+        const atomic = createOpcodeSystem(opcode, stateIndex);
+        const cycle = createOpcodeSystem(opcode, stateIndex);
+        const label = `opcode $${opcode.toString(16).padStart(2, '0')}, state ${stateIndex}`;
+
+        const atomicCycles = atomic.cpu.executeInstruction();
+        let cycleCount = 0;
+        let boundary = false;
+        while (!boundary && !cycle.cpu.isJammed && cycleCount < MAXIMUM_INSTRUCTION_CYCLES) {
+          boundary = cycle.cpu.clockCycle();
+          cycleCount += 1;
+        }
+
+        expect(cycleCount, `${label} cycle count`).toBe(atomicCycles);
+        expect(cycle.cpu.getRegisters(), `${label} register state`).toEqual(
+          atomic.cpu.getRegisters(),
+        );
+        expect(cycle.memory.accesses, `${label} bus trace`).toEqual(atomic.memory.accesses);
+      }
     }
   });
 });

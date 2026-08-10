@@ -109,4 +109,56 @@ describe('Sid', () => {
 
     expect(sid.getVoice(0).frequency).toBe(0x1234);
   });
+
+  it.each([SID_MODEL.mos6581, SID_MODEL.mos8580])(
+    'keeps clockCycle bit-identical to tick(1) for active %s voices and filters',
+    (model) => {
+      const singleCycle = new Sid(false, { model });
+      const batched = new Sid(false, { model });
+      const registers = [
+        0x34,
+        0x12,
+        0x80,
+        0x08,
+        SID_CONTROL_BIT.gate | SID_CONTROL_BIT.noise | SID_CONTROL_BIT.synchronize,
+        0x24,
+        0xf8,
+        0x45,
+        0x23,
+        0x55,
+        0x05,
+        SID_CONTROL_BIT.gate | SID_CONTROL_BIT.pulse,
+        0x15,
+        0xe6,
+        0x56,
+        0x34,
+        0x00,
+        0x00,
+        SID_CONTROL_BIT.gate | SID_CONTROL_BIT.sawtooth,
+        0x36,
+        0xd7,
+        0x07,
+        0x90,
+        0xf7,
+        SID_FILTER_BIT.lowPass | SID_FILTER_BIT.bandPass | 0x0f,
+      ];
+      for (let register = 0; register < registers.length; register += 1) {
+        const value = registers[register] ?? 0;
+        singleCycle.write(register, value);
+        batched.write(register, value);
+      }
+
+      for (let cycle = 0; cycle < 50_000; cycle += 1) {
+        singleCycle.clockCycle();
+        batched.tick(1);
+      }
+
+      expect(singleCycle.getVoice(0)).toEqual(batched.getVoice(0));
+      expect(singleCycle.getVoice(1)).toEqual(batched.getVoice(1));
+      expect(singleCycle.getVoice(2)).toEqual(batched.getVoice(2));
+      expect(singleCycle.filterCutoff).toBe(batched.filterCutoff);
+      expect(singleCycle.masterVolume).toBe(batched.masterVolume);
+      expect(singleCycle.drainSamples()).toEqual(batched.drainSamples());
+    },
+  );
 });

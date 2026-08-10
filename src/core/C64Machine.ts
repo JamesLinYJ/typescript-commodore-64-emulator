@@ -19,6 +19,7 @@ import type { C64Memory, CpuBusAccessKind, CpuBusCycleObserver } from './memory/
 const CPU_BOUNDARY_CLOCK_OFFSET = 1;
 
 export interface C64ClockedPeripheral {
+  advanceHostCycle(): void;
   advanceHostCycles(cycles: number): void;
   resetClock(): void;
 }
@@ -199,8 +200,8 @@ export class C64Machine {
     // 数据总线。这个相位不会提前触发 CIA/VIC/SID 的读副作用。
     if (cpuReadAddress !== undefined) this.memory.driveCpuReadDataBus(cpuReadAddress);
     this.memory.vic.clockCycle(this.memory);
-    this.memory.sid.tick(1);
-    for (const peripheral of this.clockedPeripherals) peripheral.advanceHostCycles(1);
+    this.memory.sid.clockCycle();
+    for (const peripheral of this.clockedPeripherals) peripheral.advanceHostCycle();
     this.synchronizeInterruptInputs();
   }
 

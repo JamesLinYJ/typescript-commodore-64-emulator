@@ -8,6 +8,7 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
+import { packRgbaPixel } from '../shared/RgbaPixel';
 import type { VicCycleResult } from './VicCycleSequencer';
 import type { VicFetchPipeline } from './VicFetchPipeline';
 import type { VicSprite } from './VicSprite';
@@ -56,6 +57,7 @@ const TEXT_DISPLAY_WIDTH = TEXT_COLUMN_COUNT * TEXT_COLUMN_WIDTH;
 const SPRITE_SOURCE_WIDTH = 24;
 const DEFAULT_FIRST_VISIBLE_CYCLE = 12;
 const DEFAULT_OUTPUT_WIDTH = 403;
+const DEFAULT_BLACK_PIXEL = packRgbaPixel(0, 0, 0);
 const TRANSPARENT_PIXEL = 0;
 const VIC_X_COUNTER_MODULUS = 0x0200;
 const VIC_X_COUNTER_MASK = VIC_X_COUNTER_MODULUS - 1;
@@ -212,14 +214,15 @@ export class VicPixelPipeline {
     fetch: VicFetchPipeline,
   ): void {
     const result = this.graphicsPixelResult;
-    const background0 = registers.backgroundColors[0] ?? registers.palette[0] ?? 0xff000000;
+    const background0 =
+      registers.backgroundColors[0] ?? registers.palette[0] ?? DEFAULT_BLACK_PIXEL;
     if (!registers.screenVisible) {
       result.color = background0;
       result.foreground = false;
       return;
     }
     if (!registers.displayModeValid) {
-      result.color = registers.palette[0] ?? 0xff000000;
+      result.color = registers.palette[0] ?? DEFAULT_BLACK_PIXEL;
       result.foreground = true;
       return;
     }

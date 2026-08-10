@@ -29,7 +29,10 @@ export interface Cia1Options extends Mos6526Options {
 export class Cia1 extends Mos6526 {
   readonly controlPorts: C64ControlPorts;
   readonly keyboard: C64KeyboardMatrix;
+  private readonly stopObservingControlPorts: () => void;
+  private readonly stopObservingKeyboard: () => void;
   private controlPortsValue: C64ControlPorts | undefined;
+  private disconnected = false;
   private lightPenInputValue: C64LightPenInput | undefined;
   private userPortValue: C64UserPort | undefined;
 
@@ -41,11 +44,26 @@ export class Cia1 extends Mos6526 {
     this.controlPortsValue = this.controlPorts;
     this.lightPenInputValue = lightPenInput;
     this.userPortValue = userPort;
-    this.keyboard.observeChanges(() => this.synchronizeLightPenInput());
-    this.controlPorts.observeDeviceSignals(() => this.synchronizeLightPenInput());
+    this.stopObservingKeyboard = this.keyboard.observeChanges(() =>
+      this.synchronizeLightPenInput(),
+    );
+    this.stopObservingControlPorts = this.controlPorts.observeDeviceSignals(() =>
+      this.synchronizeLightPenInput(),
+    );
     this.synchronizeControlPortOutputs();
     this.synchronizeLightPenInput();
     this.userPortValue?.setCia1SerialOutputs(this.serialClockOutputHigh, this.serialDataOutputHigh);
+  }
+
+  /** 解除键盘和控制口回调，避免外部保留输入对象时反向保活整颗 CIA/VIC。 */
+  disconnect(): void {
+    if (this.disconnected) return;
+    this.disconnected = true;
+    this.stopObservingKeyboard();
+    this.stopObservingControlPorts();
+    this.controlPortsValue = undefined;
+    this.lightPenInputValue = undefined;
+    this.userPortValue = undefined;
   }
 
   protected override readPortAExternalInputs(portAOutput: number, portBOutput: number): number {

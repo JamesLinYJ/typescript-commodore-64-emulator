@@ -8,7 +8,6 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -20,6 +19,7 @@ import {
   type BundledProgramDescriptor,
 } from '../src/media/BundledProgramCatalog';
 import { installPrg, parsePrg, PRG_START_MODE } from '../src/media/PrgLoader';
+import { assertSha256 } from '../src/shared/BinaryIntegrity';
 import { PAL_VIDEO_STANDARD } from '../src/video/palVideoStandard';
 import { PalFrameScheduler } from '../src/video/PalFrameScheduler';
 import { PixelFrameBuffer } from '../src/video/PixelFrameBuffer';
@@ -55,10 +55,6 @@ const C64_IO_WINDOW = {
   start: 0xd000,
 } as const;
 
-function sha256(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
-
 async function readBinary(path: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(resolve(path)));
 }
@@ -74,12 +70,7 @@ async function loadFirmware(): Promise<C64Firmware> {
 
 async function loadProgram(program: BundledProgramDescriptor): Promise<Uint8Array> {
   const bytes = await readBinary(`public/programs/${program.file}`);
-  const actualHash = sha256(bytes);
-  if (actualHash !== program.sha256) {
-    throw new Error(
-      `Bundled PRG ${program.file} SHA-256 mismatch: received ${actualHash}, expected ${program.sha256}.`,
-    );
-  }
+  await assertSha256(bytes, program.sha256, `Bundled PRG ${program.file}`);
   return bytes;
 }
 

@@ -9,6 +9,7 @@
 // --------------------------------------------------------------------------
 
 import { byte } from '../shared/numbers';
+import { packRgbaPixel } from '../shared/RgbaPixel';
 import { IoDevice } from './IoDevice';
 import { VicBorderController } from './VicBorderController';
 import {
@@ -37,22 +38,22 @@ import {
 } from './vicRegisters';
 
 export const C64_COLOR = {
-  black: 0xff000000,
-  white: 0xffffffff,
-  red: 0xffe04040,
-  cyan: 0xff60ffff,
-  purple: 0xffe060e0,
-  green: 0xff40e040,
-  blue: 0xff4040e0,
-  yellow: 0xffffff40,
-  orange: 0xffe0a040,
-  brown: 0xff9c7448,
-  lightRed: 0xffffa0a0,
-  darkGray: 0xff545454,
-  gray: 0xff888888,
-  lightGreen: 0xffa0ffa0,
-  lightBlue: 0xffa0a0ff,
-  lightGray: 0xffc0c0c0,
+  black: packRgbaPixel(0x00, 0x00, 0x00),
+  white: packRgbaPixel(0xff, 0xff, 0xff),
+  red: packRgbaPixel(0xe0, 0x40, 0x40),
+  cyan: packRgbaPixel(0x60, 0xff, 0xff),
+  purple: packRgbaPixel(0xe0, 0x60, 0xe0),
+  green: packRgbaPixel(0x40, 0xe0, 0x40),
+  blue: packRgbaPixel(0x40, 0x40, 0xe0),
+  yellow: packRgbaPixel(0xff, 0xff, 0x40),
+  orange: packRgbaPixel(0xe0, 0xa0, 0x40),
+  brown: packRgbaPixel(0x9c, 0x74, 0x48),
+  lightRed: packRgbaPixel(0xff, 0xa0, 0xa0),
+  darkGray: packRgbaPixel(0x54, 0x54, 0x54),
+  gray: packRgbaPixel(0x88, 0x88, 0x88),
+  lightGreen: packRgbaPixel(0xa0, 0xff, 0xa0),
+  lightBlue: packRgbaPixel(0xa0, 0xa0, 0xff),
+  lightGray: packRgbaPixel(0xc0, 0xc0, 0xc0),
 } as const;
 
 export const C64_PALETTE = [

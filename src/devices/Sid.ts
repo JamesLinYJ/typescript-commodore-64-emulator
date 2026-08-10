@@ -121,23 +121,13 @@ export class Sid extends IoDevice {
     const voice2 = this.voices[1];
     const voice3 = this.voices[2];
     for (let cycle = 0; cycle < elapsedCycles; cycle += 1) {
-      voice1.clockEnvelope();
-      voice2.clockEnvelope();
-      voice3.clockEnvelope();
-      voice1.clockOscillator();
-      voice2.clockOscillator();
-      voice3.clockOscillator();
-      voice1.synchronizeOscillator();
-      voice2.synchronizeOscillator();
-      voice3.synchronizeOscillator();
-      voice1.updateWaveformOutput();
-      voice2.updateWaveformOutput();
-      voice3.updateWaveformOutput();
-
-      const sample = this.resampler.push(this.clockAudioPath(voice1, voice2, voice3));
-      if (sample !== undefined) this.samples.push(sample);
-      if (this.busLatchCyclesRemaining > 0) this.busLatchCyclesRemaining -= 1;
+      this.clockVoices(voice1, voice2, voice3);
     }
+  }
+
+  /** 推进一个 SID 芯片周期，供整机固定单周期热路径调用。 */
+  clockCycle(): void {
+    this.clockVoices(this.voices[0], this.voices[1], this.voices[2]);
   }
 
   drainSamples(maximumLength?: number): Float32Array {
@@ -233,6 +223,25 @@ export class Sid extends IoDevice {
   private clockAudioPath(voice1: SidVoice, voice2: SidVoice, voice3: SidVoice): number {
     this.filter.clock(voice1.analogOutput, voice2.analogOutput, voice3.analogOutput);
     return this.externalFilter.clock(this.filter.outputPcm) / 0x8000;
+  }
+
+  private clockVoices(voice1: SidVoice, voice2: SidVoice, voice3: SidVoice): void {
+    voice1.clockEnvelope();
+    voice2.clockEnvelope();
+    voice3.clockEnvelope();
+    voice1.clockOscillator();
+    voice2.clockOscillator();
+    voice3.clockOscillator();
+    voice1.synchronizeOscillator();
+    voice2.synchronizeOscillator();
+    voice3.synchronizeOscillator();
+    voice1.updateWaveformOutput();
+    voice2.updateWaveformOutput();
+    voice3.updateWaveformOutput();
+
+    const sample = this.resampler.push(this.clockAudioPath(voice1, voice2, voice3));
+    if (sample !== undefined) this.samples.push(sample);
+    if (this.busLatchCyclesRemaining > 0) this.busLatchCyclesRemaining -= 1;
   }
 
   private readOscillator3(): number {

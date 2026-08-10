@@ -25,6 +25,7 @@ describe('PixelFrameBuffer', () => {
 
   it('rejects invalid geometry, rows, and widths instead of clipping hardware output', () => {
     expect(() => new PixelFrameBuffer(0, 1)).toThrow(/positive integers/);
+    expect(() => new PixelFrameBuffer(2, 1, new Uint32Array(1))).toThrow(/storage length/);
     const frame = new PixelFrameBuffer(2, 1);
     expect(() => frame.writeRow(-1, Uint32Array.of(1, 2))).toThrow(/outside/);
     expect(() => frame.writeRow(0, Uint32Array.of(1))).toThrow(/does not match/);

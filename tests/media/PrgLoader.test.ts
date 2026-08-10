@@ -117,6 +117,24 @@ describe('PRG loading', () => {
     expect(memory.ram[BASIC_KEYBOARD_BUFFER.countAddress]).toBe(4);
   });
 
+  it('atomically rejects a machine-code load address selected for BASIC RUN', () => {
+    const { cpu, memory } = createC64System();
+    prepareBasicAutostart(memory);
+    memory.ram[0xc000] = 0x7e;
+    memory.ram[BASIC_KEYBOARD_BUFFER.start] = 0x5a;
+    const pointersBefore = [...memory.copyRam(0x002b, 8), ...memory.copyRam(0x00ac, 4)];
+    const program = parsePrg(new Uint8Array([0x00, 0xc0, 0xa9, 0x01, 0x60]));
+
+    expect(() => installPrg(program, memory, cpu, { startMode: PRG_START_MODE.basicRun })).toThrow(
+      /BASIC RUN requires a PRG loaded at \$0801.*loads at \$c000/s,
+    );
+
+    expect(memory.ram[0xc000]).toBe(0x7e);
+    expect(memory.ram[BASIC_KEYBOARD_BUFFER.countAddress]).toBe(0);
+    expect(memory.ram[BASIC_KEYBOARD_BUFFER.start]).toBe(0x5a);
+    expect([...memory.copyRam(0x002b, 8), ...memory.copyRam(0x00ac, 4)]).toEqual(pointersBefore);
+  });
+
   it('fails atomically when BASIC is not ready or the keyboard buffer is full', () => {
     const { cpu, memory } = createC64System();
     memory.ram[BASIC_TEXT_START] = 0x7e;

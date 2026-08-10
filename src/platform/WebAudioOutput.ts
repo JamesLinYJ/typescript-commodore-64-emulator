@@ -1,6 +1,6 @@
 // +-------------------------------------------------------------------------
 //
-//   TypeScript Commodore 64 模拟器 - 浏览器音频输出生命周期
+//   TypeScript Commodore 64 模拟器 - AudioWorklet PCM 流输出生命周期
 //
 //   文件:       WebAudioOutput.ts
 //
@@ -8,10 +8,47 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-const MAXIMUM_SCHEDULE_AHEAD_SECONDS = 0.25;
+import c64PcmAudioWorkletUrl from './C64PcmAudioWorklet.ts?worker&url';
+import {
+  C64_PCM_AUDIO_PROCESSOR_NAME,
+  type PcmAudioStreamMetrics,
+  type PcmAudioWorkletCommand,
+} from './PcmAudioWorkletProtocol';
 
-export type AudioContextFactory = () => AudioContext | undefined;
+const DEFAULT_SAMPLE_RATE_HZ = 44_100;
+
+export interface PcmAudioMessagePort {
+  addEventListener(type: 'message', listener: EventListenerOrEventListenerObject): void;
+  close(): void;
+  postMessage(message: unknown, transfer?: Transferable[]): void;
+  removeEventListener(type: 'message', listener: EventListenerOrEventListenerObject): void;
+  start(): void;
+}
+
+export interface PcmAudioNode {
+  readonly port: PcmAudioMessagePort;
+  disconnect(): void;
+}
+
+export interface WebAudioContext {
+  readonly sampleRate: number;
+  readonly state: AudioContextState;
+  addEventListener(type: 'statechange', listener: () => void): void;
+  addWorkletModule(url: string): Promise<void>;
+  close(): Promise<void>;
+  createPcmNode(processorName: string, options: AudioWorkletNodeOptions): PcmAudioNode;
+  removeEventListener(type: 'statechange', listener: () => void): void;
+  resume(): Promise<void>;
+}
+
+export type AudioContextFactory = (sampleRateHz: number) => WebAudioContext | undefined;
 export type WebAudioOutputState = 'error' | 'inactive' | 'running' | 'suspended' | 'unavailable';
+
+export interface WebAudioOutputOptions {
+  readonly contextFactory?: AudioContextFactory;
+  readonly sampleRateHz?: number;
+  readonly workletModuleUrl?: string;
+}
 
 export interface WebAudioOutputStatus {
   readonly error?: Error;
@@ -20,37 +57,133 @@ export interface WebAudioOutputStatus {
 
 export type WebAudioOutputStatusObserver = (status: WebAudioOutputStatus) => void;
 
-function createBrowserAudioContext(): AudioContext | undefined {
-  return typeof AudioContext === 'undefined' ? undefined : new AudioContext();
+class BrowserWebAudioContext implements WebAudioContext {
+  private readonly handleStateChange = (): void => {
+    for (const listener of this.stateListeners) listener();
+  };
+  private readonly stateListeners = new Set<() => void>();
+
+  constructor(private readonly context: AudioContext) {
+    context.addEventListener('statechange', this.handleStateChange);
+  }
+
+  get sampleRate(): number {
+    return this.context.sampleRate;
+  }
+
+  get state(): AudioContextState {
+    return this.context.state;
+  }
+
+  addEventListener(_type: 'statechange', listener: () => void): void {
+    this.stateListeners.add(listener);
+  }
+
+  addWorkletModule(url: string): Promise<void> {
+    return this.context.audioWorklet.addModule(url);
+  }
+
+  async close(): Promise<void> {
+    this.context.removeEventListener('statechange', this.handleStateChange);
+    this.stateListeners.clear();
+    await this.context.close();
+  }
+
+  createPcmNode(processorName: string, options: AudioWorkletNodeOptions): PcmAudioNode {
+    const node = new AudioWorkletNode(this.context, processorName, options);
+    node.connect(this.context.destination);
+    return node;
+  }
+
+  removeEventListener(_type: 'statechange', listener: () => void): void {
+    this.stateListeners.delete(listener);
+  }
+
+  resume(): Promise<void> {
+    return this.context.resume();
+  }
+}
+
+function createBrowserAudioContext(sampleRateHz: number): WebAudioContext | undefined {
+  return typeof AudioContext === 'undefined'
+    ? undefined
+    : new BrowserWebAudioContext(
+        new AudioContext({ latencyHint: 'interactive', sampleRate: sampleRateHz }),
+      );
+}
+
+function emptyMetrics(): PcmAudioStreamMetrics {
+  return {
+    bufferedSamples: 0,
+    capacitySamples: 0,
+    clearCount: 0,
+    overrunSamples: 0,
+    type: 'metrics',
+    underrunSamples: 0,
+  };
+}
+
+function isPcmAudioStreamMetrics(value: unknown): value is PcmAudioStreamMetrics {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<PcmAudioStreamMetrics>;
+  return (
+    candidate.type === 'metrics' &&
+    typeof candidate.bufferedSamples === 'number' &&
+    typeof candidate.capacitySamples === 'number' &&
+    typeof candidate.clearCount === 'number' &&
+    typeof candidate.overrunSamples === 'number' &&
+    typeof candidate.underrunSamples === 'number'
+  );
 }
 
 export class WebAudioOutput {
   private activationPromise: Promise<WebAudioOutputStatus> | undefined;
-  private context: AudioContext | undefined;
-  private nextStartTime = 0;
+  private context: WebAudioContext | undefined;
+  private readonly contextFactory: AudioContextFactory;
+  private disposed = false;
+  private metricsValue = emptyMetrics();
+  private node: PcmAudioNode | undefined;
+  private readonly sampleRateHz: number;
   private readonly statusObservers = new Set<WebAudioOutputStatusObserver>();
   private statusValue: WebAudioOutputStatus = { state: 'inactive' };
-  private readonly sources = new Set<AudioBufferSourceNode>();
-  private disposed = false;
+  private readonly workletModuleUrl: string;
 
   private readonly handleActivation = (): void => {
     void this.activate();
   };
 
   private readonly handleContextStateChange = (): void => {
+    // 浏览器进入后台会挂起 AudioContext；清空工作线程中的旧样本，避免恢复后补播陈旧声音。
+    if (this.context?.state === 'suspended') this.clear();
     this.synchronizeStatusWithContext();
+  };
+
+  private readonly handleWorkletMessage = (event: Event): void => {
+    if (event instanceof MessageEvent && isPcmAudioStreamMetrics(event.data)) {
+      this.metricsValue = event.data;
+    }
   };
 
   constructor(
     private readonly activationTarget: EventTarget,
-    private readonly contextFactory: AudioContextFactory = createBrowserAudioContext,
+    options: WebAudioOutputOptions = {},
   ) {
+    this.contextFactory = options.contextFactory ?? createBrowserAudioContext;
+    this.sampleRateHz = options.sampleRateHz ?? DEFAULT_SAMPLE_RATE_HZ;
+    this.workletModuleUrl = options.workletModuleUrl ?? c64PcmAudioWorkletUrl;
+    if (!Number.isFinite(this.sampleRateHz) || this.sampleRateHz <= 0) {
+      throw new RangeError('Web Audio sample rate must be a positive finite number.');
+    }
     activationTarget.addEventListener('pointerdown', this.handleActivation);
     activationTarget.addEventListener('keydown', this.handleActivation);
   }
 
   get status(): WebAudioOutputStatus {
     return this.statusValue;
+  }
+
+  get streamMetrics(): PcmAudioStreamMetrics {
+    return this.metricsValue;
   }
 
   observeStatus(observer: WebAudioOutputStatusObserver): () => void {
@@ -72,6 +205,47 @@ export class WebAudioOutput {
     return activation;
   }
 
+  enqueue(samples: Float32Array, sampleRate: number): void {
+    const context = this.context;
+    const node = this.node;
+    if (context?.state !== 'running' || !node || samples.length === 0) return;
+    if (sampleRate !== this.sampleRateHz) {
+      throw new Error(
+        `PCM sample rate ${sampleRate} Hz does not match AudioWorklet rate ${this.sampleRateHz} Hz.`,
+      );
+    }
+
+    const transferableSamples =
+      samples.buffer instanceof ArrayBuffer &&
+      samples.byteOffset === 0 &&
+      samples.byteLength === samples.buffer.byteLength
+        ? samples
+        : Float32Array.from(samples);
+    const command: PcmAudioWorkletCommand = { samples: transferableSamples, type: 'samples' };
+    node.port.postMessage(command, [transferableSamples.buffer]);
+  }
+
+  clear(): void {
+    this.node?.port.postMessage({ type: 'clear' } satisfies PcmAudioWorkletCommand);
+    this.metricsValue = { ...this.metricsValue, bufferedSamples: 0 };
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.activationTarget.removeEventListener('pointerdown', this.handleActivation);
+    this.activationTarget.removeEventListener('keydown', this.handleActivation);
+    this.clear();
+    this.node?.port.removeEventListener('message', this.handleWorkletMessage);
+    this.node?.port.close();
+    this.node?.disconnect();
+    this.node = undefined;
+    this.context?.removeEventListener('statechange', this.handleContextStateChange);
+    if (this.context) void this.context.close().catch(() => undefined);
+    this.context = undefined;
+    this.statusObservers.clear();
+  }
+
   private async performActivation(): Promise<WebAudioOutputStatus> {
     if (this.disposed) {
       return this.setStatus('error', new Error('Audio output has already been disposed.'));
@@ -80,13 +254,28 @@ export class WebAudioOutput {
     let context = this.context;
     if (!context) {
       try {
-        context = this.contextFactory();
+        context = this.contextFactory(this.sampleRateHz);
       } catch (error: unknown) {
         return this.setStatus('error', this.toError(error));
       }
       if (!context) return this.setStatus('unavailable');
       this.context = context;
       context.addEventListener('statechange', this.handleContextStateChange);
+    }
+
+    if (context.sampleRate !== this.sampleRateHz) {
+      return this.setStatus(
+        'error',
+        new Error(
+          `Browser created a ${context.sampleRate} Hz AudioContext; the SID stream requires ${this.sampleRateHz} Hz.`,
+        ),
+      );
+    }
+
+    try {
+      await this.initializeWorklet(context);
+    } catch (error: unknown) {
+      return this.setStatus('error', this.toError(error));
     }
 
     if (context.state === 'suspended') {
@@ -100,44 +289,26 @@ export class WebAudioOutput {
     return this.synchronizeStatusWithContext();
   }
 
+  private async initializeWorklet(context: WebAudioContext): Promise<void> {
+    if (this.node) return;
+    await context.addWorkletModule(this.workletModuleUrl);
+    if (this.disposed) throw new Error('Audio output was disposed during activation.');
+
+    const node = context.createPcmNode(C64_PCM_AUDIO_PROCESSOR_NAME, {
+      channelCount: 1,
+      channelCountMode: 'explicit',
+      channelInterpretation: 'speakers',
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+    });
+    node.port.addEventListener('message', this.handleWorkletMessage);
+    node.port.start();
+    this.node = node;
+  }
+
   private releaseActivation(activation: Promise<WebAudioOutputStatus>): void {
     if (this.activationPromise === activation) this.activationPromise = undefined;
-  }
-
-  enqueue(samples: Float32Array, sampleRate: number): void {
-    const context = this.context;
-    if (context?.state !== 'running' || samples.length === 0) return;
-    if (this.nextStartTime - context.currentTime > MAXIMUM_SCHEDULE_AHEAD_SECONDS) return;
-
-    const buffer = context.createBuffer(1, samples.length, sampleRate);
-    buffer.getChannelData(0).set(samples);
-    const source = context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(context.destination);
-    source.addEventListener('ended', () => this.sources.delete(source), { once: true });
-    this.sources.add(source);
-
-    const startTime = Math.max(context.currentTime, this.nextStartTime);
-    source.start(startTime);
-    this.nextStartTime = startTime + samples.length / sampleRate;
-  }
-
-  clear(): void {
-    for (const source of this.sources) source.stop();
-    this.sources.clear();
-    this.nextStartTime = this.context?.currentTime ?? 0;
-  }
-
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.activationTarget.removeEventListener('pointerdown', this.handleActivation);
-    this.activationTarget.removeEventListener('keydown', this.handleActivation);
-    this.clear();
-    this.context?.removeEventListener('statechange', this.handleContextStateChange);
-    if (this.context) void this.context.close().catch(() => undefined);
-    this.context = undefined;
-    this.statusObservers.clear();
   }
 
   private synchronizeStatusWithContext(): WebAudioOutputStatus {

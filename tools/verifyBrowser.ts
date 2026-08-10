@@ -13,6 +13,7 @@ import { resolve } from 'node:path';
 
 import { chromium, type ConsoleMessage, type Page, type Response } from 'playwright';
 import { PNG } from 'pngjs';
+import { preview, type PreviewServer } from 'vite';
 
 interface CanvasFrame {
   readonly data: Uint8Array;
@@ -21,12 +22,20 @@ interface CanvasFrame {
 }
 
 interface AudioLifecycleProbe {
-  starts: number;
-  stops: number;
+  bufferSourceCreations: number;
+  clears: number;
+  sampleBatches: number;
 }
 
 interface AudioProbeWindow extends Window {
   __audioLifecycleProbe?: AudioLifecycleProbe;
+}
+
+interface BrowserRenderMetrics {
+  readonly framesPerSecond: number;
+  readonly overBudgetFrames: number;
+  readonly p95Ms: number;
+  readonly sampledFrames: number;
 }
 
 interface BrowserProblemAllowlist {
@@ -38,6 +47,7 @@ const PREVIEW_URL = 'http://127.0.0.1:4173';
 const OUTPUT_DIRECTORY = resolve('output/playwright/reference-ui');
 const PROGRAM_START_TIMEOUT_MS = 10_000;
 const PROGRAM_COUNTER_PATTERN = /PC \$([0-9A-F]{4})/u;
+const RENDER_METRICS_PATTERN = /呈现\s+(\d+)\s+FPS.*?p95\s+([\d.]+)\s+ms.*?超预算\s+(\d+)\/(\d+)/u;
 const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 const RGBA_BYTE_COUNT = 4;
 const MINIMUM_PROGRAM_CHANGED_PIXELS = 4_000;
@@ -45,6 +55,7 @@ const MINIMUM_PROGRAM_COLOR_COUNT = 2;
 const MINIMUM_TOUCH_TARGET_PX = 44;
 const MINIMUM_MOBILE_CANVAS_WIDTH_PX = 320;
 const BASIC_FIRMWARE_PATH = '/firmware/basic.901226-01.bin';
+const GALAGA_PROGRAM_PATH = '/programs/galaga.prg';
 const INITIALIZATION_HTTP_ERROR = '模拟器固件下载失败（HTTP 503）。请稍后重试。';
 const DESKTOP_VIEWPORT = { height: 900, width: 1_440 } as const;
 const MOBILE_PORTRAIT_VIEWPORT = { height: 844, width: 390 } as const;
@@ -52,26 +63,40 @@ const MOBILE_LANDSCAPE_VIEWPORT = { height: 390, width: 844 } as const;
 
 async function installAudioLifecycleProbe(page: Page): Promise<void> {
   await page.evaluate(() => {
-    const probe: AudioLifecycleProbe = { starts: 0, stops: 0 };
+    const probe: AudioLifecycleProbe = {
+      bufferSourceCreations: 0,
+      clears: 0,
+      sampleBatches: 0,
+    };
     (window as AudioProbeWindow).__audioLifecycleProbe = probe;
     Reflect.set(AudioContext.prototype, 'createBufferSource', () => {
-      const source = new EventTarget() as EventTarget & {
-        buffer: AudioBuffer | null;
-        connect: () => void;
-        start: () => void;
-        stop: () => void;
-      };
-      source.buffer = null;
-      source.connect = () => undefined;
-      source.start = () => {
-        probe.starts += 1;
-      };
-      source.stop = () => {
-        probe.stops += 1;
-        source.dispatchEvent(new Event('ended'));
-      };
-      return source as unknown as AudioBufferSourceNode;
+      probe.bufferSourceCreations += 1;
+      throw new Error('Legacy AudioBufferSourceNode scheduling is not allowed.');
     });
+
+    const postMessage: unknown = Reflect.get(MessagePort.prototype, 'postMessage');
+    if (typeof postMessage !== 'function')
+      throw new Error('MessagePort.postMessage is unavailable.');
+    Reflect.set(
+      MessagePort.prototype,
+      'postMessage',
+      function (
+        this: MessagePort,
+        message: unknown,
+        transferOrOptions?: StructuredSerializeOptions | Transferable[],
+      ): void {
+        if (typeof message === 'object' && message !== null) {
+          const type: unknown = Reflect.get(message, 'type');
+          if (type === 'samples') probe.sampleBatches += 1;
+          else if (type === 'clear') probe.clears += 1;
+        }
+        Reflect.apply(
+          postMessage,
+          this,
+          transferOrOptions === undefined ? [message] : [message, transferOrOptions],
+        );
+      },
+    );
   });
 }
 
@@ -81,6 +106,32 @@ async function readAudioLifecycleProbe(page: Page): Promise<AudioLifecycleProbe>
     if (!probe) throw new Error('Audio lifecycle probe was not installed.');
     return { ...probe };
   });
+}
+
+async function readBrowserRenderMetrics(page: Page): Promise<BrowserRenderMetrics> {
+  const text = (await page.locator('[aria-label="实时执行数据"]').textContent()) ?? '';
+  const match = RENDER_METRICS_PATTERN.exec(text);
+  if (!match)
+    throw new Error(`Runtime telemetry did not contain render metrics: "${text.trim()}".`);
+
+  const framesPerSecond = Number.parseInt(match[1] ?? '', 10);
+  const p95Ms = Number.parseFloat(match[2] ?? '');
+  const overBudgetFrames = Number.parseInt(match[3] ?? '', 10);
+  const sampledFrames = Number.parseInt(match[4] ?? '', 10);
+  if (
+    !Number.isFinite(framesPerSecond) ||
+    framesPerSecond <= 0 ||
+    !Number.isFinite(p95Ms) ||
+    p95Ms < 0 ||
+    !Number.isSafeInteger(overBudgetFrames) ||
+    overBudgetFrames < 0 ||
+    !Number.isSafeInteger(sampledFrames) ||
+    sampledFrames <= 0 ||
+    overBudgetFrames > sampledFrames
+  ) {
+    throw new Error(`Runtime telemetry contained invalid render metrics: "${text.trim()}".`);
+  }
+  return { framesPerSecond, overBudgetFrames, p95Ms, sampledFrames };
 }
 
 async function waitForProgramExecution(page: Page): Promise<number> {
@@ -340,7 +391,7 @@ function verifyProgramCanvas(before: CanvasFrame, after: CanvasFrame): void {
   }
 }
 
-async function verifyDesktop(page: Page): Promise<void> {
+async function verifyDesktop(page: Page): Promise<BrowserRenderMetrics> {
   await page.goto(PREVIEW_URL, { waitUntil: 'networkidle' });
   await waitForBoot(page);
   await installAudioLifecycleProbe(page);
@@ -354,28 +405,31 @@ async function verifyDesktop(page: Page): Promise<void> {
   await page.getByRole('button', { name: '启用声音' }).click();
   await page.getByText('声音已开启', { exact: true }).waitFor();
   await page.waitForFunction(
-    () => ((window as AudioProbeWindow).__audioLifecycleProbe?.starts ?? 0) > 0,
+    () => ((window as AudioProbeWindow).__audioLifecycleProbe?.sampleBatches ?? 0) > 0,
   );
   await page.getByRole('button', { name: '暂停' }).click();
   await page.getByText('已暂停', { exact: true }).first().waitFor();
   await page.waitForFunction(
-    () => ((window as AudioProbeWindow).__audioLifecycleProbe?.stops ?? 0) > 0,
+    () => ((window as AudioProbeWindow).__audioLifecycleProbe?.clears ?? 0) > 0,
   );
   const pausedAudio = await readAudioLifecycleProbe(page);
-  if (pausedAudio.starts !== pausedAudio.stops) {
-    throw new Error(
-      `Pause stopped ${pausedAudio.stops}/${pausedAudio.starts} scheduled audio sources.`,
-    );
+  if (pausedAudio.bufferSourceCreations !== 0) {
+    throw new Error(`Audio created ${pausedAudio.bufferSourceCreations} buffer source(s).`);
   }
   await page.getByRole('button', { name: '单帧' }).click();
   await page.waitForTimeout(50);
   const steppedAudio = await readAudioLifecycleProbe(page);
-  if (steppedAudio.starts !== pausedAudio.starts) {
+  if (steppedAudio.sampleBatches !== pausedAudio.sampleBatches) {
     throw new Error('Paused single-frame execution scheduled non-realtime browser audio.');
   }
   const basicReadyFrame = await captureCanvasFrame(page);
   await page.getByRole('button', { name: '运行' }).click();
   await page.getByText('运行中', { exact: true }).first().waitFor();
+  await page.waitForFunction(
+    (previousBatchCount) =>
+      ((window as AudioProbeWindow).__audioLifecycleProbe?.sampleBatches ?? 0) > previousBatchCount,
+    pausedAudio.sampleBatches,
+  );
 
   await page.getByRole('button', { name: '切换到深色主题' }).click();
   await page.locator('.app-page--dark').waitFor();
@@ -385,6 +439,7 @@ async function verifyDesktop(page: Page): Promise<void> {
   await page.getByText(/已载入 .* 字节至 \$0801/).waitFor({ timeout: 10_000 });
   await waitForProgramExecution(page);
   await page.waitForTimeout(2_000);
+  const renderMetrics = await readBrowserRenderMetrics(page);
   await page.getByRole('button', { name: '暂停' }).click();
   verifyProgramCanvas(basicReadyFrame, await captureCanvasFrame(page));
   await page.getByRole('button', { name: '运行' }).click();
@@ -393,6 +448,42 @@ async function verifyDesktop(page: Page): Promise<void> {
     path: resolve(OUTPUT_DIRECTORY, 'current-desktop.png'),
     fullPage: true,
   });
+
+  const beforeResetAudio = await readAudioLifecycleProbe(page);
+  await page.getByRole('button', { name: '重置' }).click();
+  await page.waitForFunction(
+    (previousClearCount) =>
+      ((window as AudioProbeWindow).__audioLifecycleProbe?.clears ?? 0) > previousClearCount,
+    beforeResetAudio.clears,
+  );
+  await page.waitForFunction(
+    (previousBatchCount) =>
+      ((window as AudioProbeWindow).__audioLifecycleProbe?.sampleBatches ?? 0) > previousBatchCount,
+    beforeResetAudio.sampleBatches,
+  );
+  return renderMetrics;
+}
+
+async function verifyBundledProgramIntegrity(page: Page): Promise<void> {
+  await page.route(`**${GALAGA_PROGRAM_PATH}`, async (route) => {
+    const response = await route.fetch();
+    const changed = await response.body();
+    const lastByte = changed.length - 1;
+    if (lastByte < 2) throw new Error('Galaga integrity probe received an invalid PRG payload.');
+    changed[lastByte] = (changed[lastByte] ?? 0) ^ 0x01;
+    await route.fulfill({ response, body: changed });
+  });
+
+  await page.goto(PREVIEW_URL, { waitUntil: 'networkidle' });
+  await waitForBoot(page);
+  await page.getByRole('button', { name: '载入程序' }).click();
+  const alert = page.getByRole('alert');
+  await alert.waitFor();
+  const message = (await alert.textContent()) ?? '';
+  if (!/Galaga\.prg|galaga\.prg/iu.test(message) || !/SHA-256 mismatch/iu.test(message)) {
+    throw new Error(`Changed bundled PRG produced an unexpected error: "${message.trim()}".`);
+  }
+  await page.unroute(`**${GALAGA_PROGRAM_PATH}`);
 }
 
 async function verifyTouchInput(page: Page): Promise<void> {
@@ -555,14 +646,22 @@ async function verifyMobile(
 
 async function main(): Promise<void> {
   await mkdir(OUTPUT_DIRECTORY, { recursive: true });
+  const previewServer = await preview({
+    preview: { host: '127.0.0.1', port: 4173, strictPort: true },
+  });
   const browser = await chromium.launch({ headless: true });
   const problems: string[] = [];
 
   try {
     const desktop = await browser.newPage({ viewport: DESKTOP_VIEWPORT });
     collectBrowserProblems(desktop, problems);
-    await verifyDesktop(desktop);
+    const desktopMetrics = await verifyDesktop(desktop);
     await desktop.close();
+
+    const integrity = await browser.newPage({ viewport: DESKTOP_VIEWPORT });
+    collectBrowserProblems(integrity, problems);
+    await verifyBundledProgramIntegrity(integrity);
+    await integrity.close();
 
     const mobile = await browser.newPage({
       hasTouch: true,
@@ -642,8 +741,15 @@ async function main(): Promise<void> {
       () => basicFirmwareRequests,
     );
     await recovery.close();
+
+    console.log(
+      `Browser render metrics: ${desktopMetrics.framesPerSecond} FPS, ` +
+        `p95 ${desktopMetrics.p95Ms.toFixed(2)} ms, ` +
+        `${desktopMetrics.overBudgetFrames}/${desktopMetrics.sampledFrames} over budget.`,
+    );
   } finally {
     await browser.close();
+    await closePreviewServer(previewServer);
   }
 
   if (problems.length > 0) {
@@ -652,6 +758,15 @@ async function main(): Promise<void> {
   console.log(
     'PASS browser UI: 1440 desktop, 390 portrait/recovery, 844 landscape, CDP multi-touch, 44px targets, 0 unexpected overflow/warnings/errors.',
   );
+}
+
+async function closePreviewServer(server: PreviewServer): Promise<void> {
+  await new Promise<void>((resolveClose, rejectClose) => {
+    server.httpServer.close((error) => {
+      if (error) rejectClose(error);
+      else resolveClose();
+    });
+  });
 }
 
 await main();

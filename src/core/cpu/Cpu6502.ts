@@ -14,9 +14,12 @@ import { hex, word } from '../../shared/numbers';
 import { BreakpointError } from './BreakpointError';
 import { CPU_POWER_ON_STATE, CPU_RESET_SEQUENCE, CPU_VECTOR, CpuStatusFlag } from './cpuConstants';
 import { CpuInterruptTiming } from './CpuInterruptTiming';
-import { CpuOpcode, type AddressingMode } from './CpuOpcode';
+import { CpuOpcode, type AddressingMode, type InstructionHandler } from './CpuOpcode';
 import {
   CPU_ADDRESS_MODE as CycleAddressMode,
+  CPU_ADDRESS_MODE_LENGTH,
+  CPU_ADDRESS_MODE_OPERAND,
+  CPU_CYCLE_TEMPLATE_BASE_CYCLES,
   CPU_MEMORY_ACCESS as CycleMemoryAccess,
   CPU_OPCODE_FLAG,
   CPU_OPCODE_FLAGS,
@@ -26,7 +29,9 @@ import {
   CPU_OPCODE_PLAN_ACCESS_SHIFT,
   CPU_OPCODE_PLAN_MODE_MASK,
   CPU_OPCODE_PLAN_MODE_SHIFT,
+  CPU_OPCODE_PLAN_TEMPLATE_MASK,
   CPU_OPERATION as CycleOperation,
+  CPU_OPERATION_MNEMONIC,
 } from './CpuOpcodeMetadata';
 import type { CpuRegisters } from './CpuRegisters';
 
@@ -2360,1519 +2365,250 @@ export class Cpu6502 extends TypedEventEmitter<CpuEvents> {
   // 操作码表与查找表初始化
   // ------------------------------------------------------------------------
 
+  /**
+   * 从逐周期执行器使用的 operation/plan 元数据生成原子指令入口。
+   * 这样每个 opcode 的操作、寻址、长度和基础周期只有一个权威来源。
+   */
   getOpcodeTable(): CpuOpcode[] {
-    return [
-      new CpuOpcode(7, 1, () => this.opBRK(), null, 'brk'), // 00
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opORA(address),
-        () => this.byIndirectX(),
-        'ora ($aa,x)',
-      ), // 01
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 02
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opASO(address),
-        () => this.byIndirectX(),
-        'aso ($aa,x)',
-      ), // 03
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPage(),
-        'nop $aa',
-      ), // 04
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opORA(address),
-        () => this.byZeroPage(),
-        'ora $aa',
-      ), // 05
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opASL(address),
-        () => this.byZeroPage(),
-        'asl $aa',
-      ), // 06
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opASO(address),
-        () => this.byZeroPage(),
-        'aso $aa',
-      ), // 07
-      new CpuOpcode(3, 1, () => this.opPHP(), null, 'php'), // 08
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opORA(address),
-        () => this.byImmediate(),
-        'ora #$aa',
-      ), // 09
-      new CpuOpcode(2, 1, () => this.opASL_A(), null, 'asl a'), // 0a
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opANC(),
-        () => this.byImmediate(),
-        'anc #$aa',
-      ), // 0b
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byAbsolute(),
-        'nop $aaaa',
-      ), // 0c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opORA(address),
-        () => this.byAbsolute(),
-        'ora $aaaa',
-      ), // 0d
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opASL(address),
-        () => this.byAbsolute(),
-        'asl $aaaa',
-      ), // 0e
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opASO(address),
-        () => this.byAbsolute(),
-        'aso $aaaa',
-      ), // 0f
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opBPL(),
-        () => this.byZeroPage(),
-        'bpl $aa',
-      ), // 10
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opORA(address),
-        () => this.byIndirectY(),
-        'ora ($aa),y',
-      ), // 11
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 12
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opASO(address),
-        () => this.byIndirectY(),
-        'aso ($aa),y',
-      ), // 13
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPageX(),
-        'nop $aa,x',
-      ), // 14
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opORA(address),
-        () => this.byZeroPageX(),
-        'ora $aa,x',
-      ), // 15
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opASL(address),
-        () => this.byZeroPageX(),
-        'asl $aa,x',
-      ), // 16
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opASO(address),
-        () => this.byZeroPageX(),
-        'aso $aa,x',
-      ), // 17
-      new CpuOpcode(2, 1, () => this.opCLC(), null, 'clc'), // 18
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opORA(address),
-        () => this.byAbsoluteY(),
-        'ora $aaaa,y',
-      ), // 19
-      new CpuOpcode(2, 1, () => this.opNOP(), null, 'nop'), // 1a
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opASO(address),
-        () => this.byAbsoluteY(),
-        'aso $aaaa,y',
-      ), // 1b
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byAbsoluteX(),
-        'nop $aaaa,x',
-      ), // 1c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opORA(address),
-        () => this.byAbsoluteX(),
-        'ora $aaaa,x',
-      ), // 1d was 5
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opASL(address),
-        () => this.byAbsoluteX(),
-        'asl $aaaa,x',
-      ), // 1e
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opASO(address),
-        () => this.byAbsoluteX(),
-        'aso $aaaa,x',
-      ), // 1f
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opJSR(address),
-        () => this.byAbsolute(),
-        'jsr $aaaa',
-      ), // 20
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opAND(address),
-        () => this.byIndirectX(),
-        'and ($aa,x)',
-      ), // 21
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 22
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opRLA(address),
-        () => this.byIndirectX(),
-        'rla ($aa,x)',
-      ), // 23
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opBIT(address),
-        () => this.byZeroPage(),
-        'bit $aa',
-      ), // 24
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opAND(address),
-        () => this.byZeroPage(),
-        'and $aa',
-      ), // 25
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opROL(address),
-        () => this.byZeroPage(),
-        'rol $aa',
-      ), // 26
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opRLA(address),
-        () => this.byZeroPage(),
-        'rla $aa',
-      ), // 27
-      new CpuOpcode(4, 1, () => this.opPLP(), null, 'plp'), // 28
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opAND(address),
-        () => this.byImmediate(),
-        'and #$aa',
-      ), // 29
-      new CpuOpcode(2, 1, () => this.opROL_A(), null, 'rol a'), // 2a
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opANC(),
-        () => this.byImmediate(),
-        'anc #$aa',
-      ), // 2b
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opBIT(address),
-        () => this.byAbsolute(),
-        'bit $aaaa',
-      ), // 2c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opAND(address),
-        () => this.byAbsolute(),
-        'and $aaaa',
-      ), // 2d
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opROL(address),
-        () => this.byAbsolute(),
-        'rol $aaaa',
-      ), // 2e
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opRLA(address),
-        () => this.byAbsolute(),
-        'rla $aaaa',
-      ), // 2f
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opBMI(),
-        () => this.byZeroPage(),
-        'bmi $aa',
-      ), // 30
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opAND(address),
-        () => this.byIndirectY(),
-        'and ($aa),y',
-      ), // 31
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 32
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opRLA(address),
-        () => this.byIndirectY(),
-        'rla ($aa),y',
-      ), // 33
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPageX(),
-        'nop $aa,x',
-      ), // 34
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opAND(address),
-        () => this.byZeroPageX(),
-        'and $aa,x',
-      ), // 35
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opROL(address),
-        () => this.byZeroPageX(),
-        'rol $aa,x',
-      ), // 36
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opRLA(address),
-        () => this.byZeroPageX(),
-        'rla $aa,x',
-      ), // 37
-      new CpuOpcode(2, 1, () => this.opSEC(), null, 'sec'), // 38
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opAND(address),
-        () => this.byAbsoluteY(),
-        'and $aaaa,y',
-      ), // 39
-      new CpuOpcode(2, 1, () => this.opNOP(), null, 'nop'), // 3a
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opRLA(address),
-        () => this.byAbsoluteY(),
-        'rla $aaaa,y',
-      ), // 3b
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byAbsoluteX(),
-        'nop $aaaa,x',
-      ), // 3c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opAND(address),
-        () => this.byAbsoluteX(),
-        'and $aaaa,x',
-      ), // 3d was 5
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opROL(address),
-        () => this.byAbsoluteX(),
-        'rol $aaaa,x',
-      ), // 3e
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opRLA(address),
-        () => this.byAbsoluteX(),
-        'rla $aaaa,x',
-      ), // 3f
-      new CpuOpcode(6, 1, () => this.opRTI(), null, 'rti'), // 40 was 4
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opEOR(address),
-        () => this.byIndirectX(),
-        'eor ($aa,x)',
-      ), // 41
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 42
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opLSE(address),
-        () => this.byIndirectX(),
-        'lse ($aa,x)',
-      ), // 43
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPage(),
-        'nop $aa',
-      ), // 44
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opEOR(address),
-        () => this.byZeroPage(),
-        'eor $aa',
-      ), // 45
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opLSR(address),
-        () => this.byZeroPage(),
-        'lsr $aa',
-      ), // 46
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opLSE(address),
-        () => this.byZeroPage(),
-        'lse $aa',
-      ), // 47
-      new CpuOpcode(3, 1, () => this.opPHA(), null, 'pha'), // 48
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opEOR(address),
-        () => this.byImmediate(),
-        'eor #$aa',
-      ), // 49
-      new CpuOpcode(2, 1, () => this.opLSR_A(), null, 'lsr a'), // 4a
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opALR(),
-        () => this.byImmediate(),
-        'alr #$aa',
-      ), // 4b
-      new CpuOpcode(
-        3,
-        3,
-        (address) => this.opJMP(address),
-        () => this.byAbsolute(),
-        'jmp $aaaa',
-      ), // 4c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opEOR(address),
-        () => this.byAbsolute(),
-        'eor $aaaa',
-      ), // 4d was 6
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opLSR(address),
-        () => this.byAbsolute(),
-        'lsr $aaaa',
-      ), // 4e
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opLSE(address),
-        () => this.byAbsolute(),
-        'lse $aaaa',
-      ), // 4f
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opBVC(),
-        () => this.byZeroPage(),
-        'bvc $aa',
-      ), // 50
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opEOR(address),
-        () => this.byIndirectY(),
-        'eor ($aa),y',
-      ), // 51
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 52
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opLSE(address),
-        () => this.byIndirectY(),
-        'lse ($aa),y',
-      ), // 53
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPageX(),
-        'nop $aa,x',
-      ), // 54
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opEOR(address),
-        () => this.byZeroPageX(),
-        'eor $aa,x',
-      ), // 55
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opLSR(address),
-        () => this.byZeroPageX(),
-        'lsr $aa,x',
-      ), // 56
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opLSE(address),
-        () => this.byZeroPageX(),
-        'lse $aa,x',
-      ), // 57
-      new CpuOpcode(2, 1, () => this.opCLI(), null, 'cli'), // 58
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opEOR(address),
-        () => this.byAbsoluteY(),
-        'eor $aaaa,y',
-      ), // 59
-      new CpuOpcode(2, 1, () => this.opNOP(), null, 'nop'), // 5a
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opLSE(address),
-        () => this.byAbsoluteY(),
-        'lse $aaaa,y',
-      ), // 5b
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byAbsoluteX(),
-        'nop $aaaa,x',
-      ), // 5c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opEOR(address),
-        () => this.byAbsoluteX(),
-        'eor $aaaa,x',
-      ), // 5d was 5
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opLSR(address),
-        () => this.byAbsoluteX(),
-        'lsr $aaaa,x',
-      ), // 5e
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opLSE(address),
-        () => this.byAbsoluteX(),
-        'lse $aaaa,x',
-      ), // 5f
-      new CpuOpcode(6, 1, () => this.opRTS(), null, 'rts'), // 60 was 4
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opADC(address),
-        () => this.byIndirectX(),
-        'adc ($aa,x)',
-      ), // 61
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 62
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opRRA(address),
-        () => this.byIndirectX(),
-        'rra ($aa,x)',
-      ), // 63
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPage(),
-        'nop $aa',
-      ), // 64
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opADC(address),
-        () => this.byZeroPage(),
-        'adc $aa',
-      ), // 65
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opROR(address),
-        () => this.byZeroPage(),
-        'ror $aa',
-      ), // 66
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opRRA(address),
-        () => this.byZeroPage(),
-        'rra $aa',
-      ), // 67
-      new CpuOpcode(4, 1, () => this.opPLA(), null, 'pla'), // 68
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opADC(address),
-        () => this.byImmediate(),
-        'adc #$aa',
-      ), // 69
-      new CpuOpcode(2, 1, () => this.opROR_A(), null, 'ror a'), // 6a
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opARR(),
-        () => this.byImmediate(),
-        'arr #$aa',
-      ), // 6b
-      new CpuOpcode(
-        5,
-        3,
-        (address) => this.opJMP(address),
-        () => this.byIndirect(),
-        'jmp ($aaaa)',
-      ), // 6c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opADC(address),
-        () => this.byAbsolute(),
-        'adc $aaaa',
-      ), // 6d
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opROR(address),
-        () => this.byAbsolute(),
-        'ror $aaaa',
-      ), // 6e
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opRRA(address),
-        () => this.byAbsolute(),
-        'rra $aaaa',
-      ), // 6f
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opBVS(),
-        () => this.byZeroPage(),
-        'bvs $aa',
-      ), // 70
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opADC(address),
-        () => this.byIndirectY(),
-        'adc ($aa),y',
-      ), // 71
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 72
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opRRA(address),
-        () => this.byIndirectY(),
-        'rra ($aa),y',
-      ), // 73
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPageX(),
-        'nop $aa,x',
-      ), // 74
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opADC(address),
-        () => this.byZeroPageX(),
-        'adc $aa,x',
-      ), // 75
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opROR(address),
-        () => this.byZeroPageX(),
-        'ror $aa,x',
-      ), // 76
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opRRA(address),
-        () => this.byZeroPageX(),
-        'rra $aa,x',
-      ), // 77
-      new CpuOpcode(2, 1, () => this.opSEI(), null, 'sei'), // 78
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opADC(address),
-        () => this.byAbsoluteY(),
-        'adc $aaaa,y',
-      ), // 79
-      new CpuOpcode(2, 1, () => this.opNOP(), null, 'nop'), // 7a
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opRRA(address),
-        () => this.byAbsoluteY(),
-        'rra $aaaa,y',
-      ), // 7b
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byAbsoluteX(),
-        'nop $aaaa,x',
-      ), // 7c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opADC(address),
-        () => this.byAbsoluteX(),
-        'adc $aaaa,x',
-      ), // 7d was 5
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opROR(address),
-        () => this.byAbsoluteX(),
-        'ror $aaaa,x',
-      ), // 7e
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opRRA(address),
-        () => this.byAbsoluteX(),
-        'rra $aaaa,x',
-      ), // 7f
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byImmediate(),
-        'nop #$aa',
-      ), // 80
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opSTA(address),
-        () => this.byIndirectX(),
-        'sta ($aa,x)',
-      ), // 81
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byImmediate(),
-        'nop #$aa',
-      ), // 82
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opAXS(address),
-        () => this.byIndirectX(),
-        'axs ($aa,x)',
-      ), // 83
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opSTY(address),
-        () => this.byZeroPage(),
-        'sty $aa',
-      ), // 84
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opSTA(address),
-        () => this.byZeroPage(),
-        'sta $aa',
-      ), // 85
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opSTX(address),
-        () => this.byZeroPage(),
-        'stx $aa',
-      ), // 86
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opAXS(address),
-        () => this.byZeroPage(),
-        'axs $aa',
-      ), // 87
-      new CpuOpcode(2, 1, () => this.opDEY(), null, 'dey'), // 88
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byImmediate(),
-        'nop #$aa',
-      ), // 89
-      new CpuOpcode(2, 1, () => this.opTXA(), null, 'txa'), // 8a
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opXAA(),
-        () => this.byImmediate(),
-        'xaa #$aa',
-      ), // 8b
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opSTY(address),
-        () => this.byAbsolute(),
-        'sty $aaaa',
-      ), // 8c
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opSTA(address),
-        () => this.byAbsolute(),
-        'sta $aaaa',
-      ), // 8d
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opSTX(address),
-        () => this.byAbsolute(),
-        'stx $aaaa',
-      ), // 8e
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opAXS(address),
-        () => this.byAbsolute(),
-        'axs $aaaa',
-      ), // 8f
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opBCC(),
-        () => this.byZeroPage(),
-        'bcc $aa',
-      ), // 90
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opSTA(address),
-        () => this.byIndirectY(),
-        'sta ($aa),y',
-      ), // 91
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // 92
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opAXA(address),
-        () => this.byIndirectY(),
-        'axa ($aa),y',
-      ), // 93
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opSTY(address),
-        () => this.byZeroPageX(),
-        'sty $aa,x',
-      ), // 94
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opSTA(address),
-        () => this.byZeroPageX(),
-        'sta $aa,x',
-      ), // 95
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opSTX(address),
-        () => this.byZeroPageY(),
-        'stx $aa,y',
-      ), // 96
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opAXS(address),
-        () => this.byZeroPageY(),
-        'axs $aa,y',
-      ), // 97
-      new CpuOpcode(2, 1, () => this.opTYA(), null, 'tya'), // 98
-      new CpuOpcode(
-        5,
-        3,
-        (address) => this.opSTA(address),
-        () => this.byAbsoluteY(),
-        'sta $aaaa,y',
-      ), // 99
-      new CpuOpcode(2, 1, () => this.opTXS(), null, 'txs'), // 9a
-      new CpuOpcode(
-        5,
-        3,
-        (address) => this.opTAS(address),
-        () => this.byAbsoluteY(),
-        'tas $aaaa,y',
-      ), // 9b
-      new CpuOpcode(
-        5,
-        3,
-        (address) => this.opSAY(address),
-        () => this.byAbsoluteX(),
-        'say $aaaa,x',
-      ), // 9c
-      new CpuOpcode(
-        5,
-        3,
-        (address) => this.opSTA(address),
-        () => this.byAbsoluteX(),
-        'sta $aaaa,x',
-      ), // 9d
-      new CpuOpcode(
-        5,
-        3,
-        (address) => this.opXAS(address),
-        () => this.byAbsoluteY(),
-        'xas $aaaa,y',
-      ), // 9e
-      new CpuOpcode(
-        5,
-        3,
-        (address) => this.opAXA(address),
-        () => this.byAbsoluteY(),
-        'axa $aaaa,y',
-      ), // 9f
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opLDY(address),
-        () => this.byImmediate(),
-        'ldy #$aa',
-      ), // a0
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opLDA(address),
-        () => this.byIndirectX(),
-        'lda ($aa,x)',
-      ), // a1
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opLDX(address),
-        () => this.byImmediate(),
-        'ldx #$aa',
-      ), // a2
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opLAX(address),
-        () => this.byIndirectX(),
-        'lax ($aa,x)',
-      ), // a3
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opLDY(address),
-        () => this.byZeroPage(),
-        'ldy $aa',
-      ), // a4
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opLDA(address),
-        () => this.byZeroPage(),
-        'lda $aa',
-      ), // a5
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opLDX(address),
-        () => this.byZeroPage(),
-        'ldx $aa',
-      ), // a6
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opLAX(address),
-        () => this.byZeroPage(),
-        'lax $aa',
-      ), // a7
-      new CpuOpcode(2, 1, () => this.opTAY(), null, 'tay'), // a8
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opLDA(address),
-        () => this.byImmediate(),
-        'lda #$aa',
-      ), // a9
-      new CpuOpcode(2, 1, () => this.opTAX(), null, 'tax'), // aa
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opOAL(address),
-        () => this.byImmediate(),
-        'oal #$aa',
-      ), // ab
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLDY(address),
-        () => this.byAbsolute(),
-        'ldy $aaaa',
-      ), // ac
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLDA(address),
-        () => this.byAbsolute(),
-        'lda $aaaa',
-      ), // ad
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLDX(address),
-        () => this.byAbsolute(),
-        'ldx $aaaa',
-      ), // ae
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLAX(address),
-        () => this.byAbsolute(),
-        'lax $aaaa',
-      ), // af
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opBCS(),
-        () => this.byZeroPage(),
-        'bcs $aa',
-      ), // b0
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opLDA(address),
-        () => this.byIndirectY(),
-        'lda ($aa),y',
-      ), // b1
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // b2
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opLAX(address),
-        () => this.byIndirectY(),
-        'lax ($aa),y',
-      ), // b3
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opLDY(address),
-        () => this.byZeroPageX(),
-        'ldy $aa,x',
-      ), // b4
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opLDA(address),
-        () => this.byZeroPageX(),
-        'lda $aa,x',
-      ), // b5
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opLDX(address),
-        () => this.byZeroPageY(),
-        'ldx $aa,y',
-      ), // b6
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opLAX(address),
-        () => this.byZeroPageY(),
-        'lax $aa,y',
-      ), // b7
-      new CpuOpcode(2, 1, () => this.opCLV(), null, 'clv'), // b8
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLDA(address),
-        () => this.byAbsoluteY(),
-        'lda $aaaa,y',
-      ), // b9
-      new CpuOpcode(2, 1, () => this.opTSX(), null, 'tsx'), // ba
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLAS(address),
-        () => this.byAbsoluteY(),
-        'las $aaaa,y',
-      ), // bb
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLDY(address),
-        () => this.byAbsoluteX(),
-        'ldy $aaaa,x',
-      ), // bc
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLDA(address),
-        () => this.byAbsoluteX(),
-        'lda $aaaa,x',
-      ), // bd
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLDX(address),
-        () => this.byAbsoluteY(),
-        'ldx $aaaa,y',
-      ), // be
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opLAX(address),
-        () => this.byAbsoluteY(),
-        'lax $aaaa,y',
-      ), // bf
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opCPY(address),
-        () => this.byImmediate(),
-        'cpy #$aa',
-      ), // c0
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opCMP(address),
-        () => this.byIndirectX(),
-        'cmp ($aa,x)',
-      ), // c1
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byImmediate(),
-        'nop #$aa',
-      ), // c2
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opDCM(address),
-        () => this.byIndirectX(),
-        'dcm ($aa,x)',
-      ), // c3
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opCPY(address),
-        () => this.byZeroPage(),
-        'cpy $aa',
-      ), // c4
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opCMP(address),
-        () => this.byZeroPage(),
-        'cmp $aa',
-      ), // c5
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opDEC(address),
-        () => this.byZeroPage(),
-        'dec $aa',
-      ), // c6
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opDCM(address),
-        () => this.byZeroPage(),
-        'dcm $aa',
-      ), // c7
-      new CpuOpcode(2, 1, () => this.opINY(), null, 'iny'), // c8
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opCMP(address),
-        () => this.byImmediate(),
-        'cmp #$aa',
-      ), // c9
-      new CpuOpcode(2, 1, () => this.opDEX(), null, 'dex'), // ca
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opSAX(address),
-        () => this.byImmediate(),
-        'sax #$aa',
-      ), // cb
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opCPY(address),
-        () => this.byAbsolute(),
-        'cpy $aaaa',
-      ), // cc
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opCMP(address),
-        () => this.byAbsolute(),
-        'cmp $aaaa',
-      ), // cd
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opDEC(address),
-        () => this.byAbsolute(),
-        'dec $aaaa',
-      ), // ce
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opDCM(address),
-        () => this.byAbsolute(),
-        'dcm $aaaa',
-      ), // cf
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opBNE(),
-        () => this.byZeroPage(),
-        'bne $aa',
-      ), // d0
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opCMP(address),
-        () => this.byIndirectY(),
-        'cmp ($aa),y',
-      ), // d1
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // d2
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opDCM(address),
-        () => this.byIndirectY(),
-        'dcm ($aa),y',
-      ), // d3
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPageX(),
-        'nop $aa,x',
-      ), // d4
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opCMP(address),
-        () => this.byZeroPageX(),
-        'cmp $aa,x',
-      ), // d5
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opDEC(address),
-        () => this.byZeroPageX(),
-        'dec $aa,x',
-      ), // d6
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opDCM(address),
-        () => this.byZeroPageX(),
-        'dcm $aa,x',
-      ), // d7
-      new CpuOpcode(2, 1, () => this.opCLD(), null, 'cld'), // d8
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opCMP(address),
-        () => this.byAbsoluteY(),
-        'cmp $aaaa,y',
-      ), // d9
-      new CpuOpcode(2, 1, () => this.opNOP(), null, 'nop'), // da
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opDCM(address),
-        () => this.byAbsoluteY(),
-        'dcm $aaaa,y',
-      ), // db
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byAbsoluteX(),
-        'nop $aaaa,x',
-      ), // dc
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opCMP(address),
-        () => this.byAbsoluteX(),
-        'cmp $aaaa,x',
-      ), // dd was 5
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opDEC(address),
-        () => this.byAbsoluteX(),
-        'dec $aaaa,x',
-      ), // de
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opDCM(address),
-        () => this.byAbsoluteX(),
-        'dcm $aaaa,x',
-      ), // df
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opCPX(address),
-        () => this.byImmediate(),
-        'cpx #$aa',
-      ), // e0
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opSBC(address),
-        () => this.byIndirectX(),
-        'sbc ($aa,x)',
-      ), // e1
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byImmediate(),
-        'nop #$aa',
-      ), // e2
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opINS(address),
-        () => this.byIndirectX(),
-        'ins ($aa,x)',
-      ), // e3
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opCPX(address),
-        () => this.byZeroPage(),
-        'cpx $aa',
-      ), // e4
-      new CpuOpcode(
-        3,
-        2,
-        (address) => this.opSBC(address),
-        () => this.byZeroPage(),
-        'sbc $aa',
-      ), // e5
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opINC(address),
-        () => this.byZeroPage(),
-        'inc $aa',
-      ), // e6
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opINS(address),
-        () => this.byZeroPage(),
-        'ins $aa',
-      ), // e7
-      new CpuOpcode(2, 1, () => this.opINX(), null, 'inx'), // e8
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opSBC(address),
-        () => this.byImmediate(),
-        'sbc #$aa',
-      ), // e9
-      new CpuOpcode(2, 1, () => this.opNOP(), null, 'nop'), // ea
-      new CpuOpcode(
-        2,
-        2,
-        (address) => this.opSBC(address),
-        () => this.byImmediate(),
-        'sbc #$aa',
-      ), // eb
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opCPX(address),
-        () => this.byAbsolute(),
-        'cpx $aaaa',
-      ), // ec
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opSBC(address),
-        () => this.byAbsolute(),
-        'sbc $aaaa',
-      ), // ed
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opINC(address),
-        () => this.byAbsolute(),
-        'inc $aaaa',
-      ), // ee
-      new CpuOpcode(
-        6,
-        3,
-        (address) => this.opINS(address),
-        () => this.byAbsolute(),
-        'ins $aaaa',
-      ), // ef
-      new CpuOpcode(
-        2,
-        2,
-        () => this.opBEQ(),
-        () => this.byZeroPage(),
-        'beq $aa',
-      ), // f0
-      new CpuOpcode(
-        5,
-        2,
-        (address) => this.opSBC(address),
-        () => this.byIndirectY(),
-        'sbc ($aa),y',
-      ), // f1
-      new CpuOpcode(2, 1, () => this.opHLT(), null, 'hlt'), // f2
-      new CpuOpcode(
-        8,
-        2,
-        (address) => this.opINS(address),
-        () => this.byIndirectY(),
-        'ins ($aa),y',
-      ), // f3
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byZeroPageX(),
-        'nop $aa,x',
-      ), // f4
-      new CpuOpcode(
-        4,
-        2,
-        (address) => this.opSBC(address),
-        () => this.byZeroPageX(),
-        'sbc $aa,x',
-      ), // f5
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opINC(address),
-        () => this.byZeroPageX(),
-        'inc $aa,x',
-      ), // f6
-      new CpuOpcode(
-        6,
-        2,
-        (address) => this.opINS(address),
-        () => this.byZeroPageX(),
-        'ins $aa,x',
-      ), // f7
-      new CpuOpcode(2, 1, () => this.opSED(), null, 'sed'), // f8
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opSBC(address),
-        () => this.byAbsoluteY(),
-        'sbc $aaaa,y',
-      ), // f9
-      new CpuOpcode(2, 1, () => this.opNOP(), null, 'nop'), // fa
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opINS(address),
-        () => this.byAbsoluteY(),
-        'ins $aaaa,y',
-      ), // fb
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opUndocumentedNOP(address),
-        () => this.byAbsoluteX(),
-        'nop $aaaa,x',
-      ), // fc
-      new CpuOpcode(
-        4,
-        3,
-        (address) => this.opSBC(address),
-        () => this.byAbsoluteX(),
-        'sbc $aaaa,x',
-      ), // fd was 5
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opINC(address),
-        () => this.byAbsoluteX(),
-        'inc $aaaa,x',
-      ), // fe
-      new CpuOpcode(
-        7,
-        3,
-        (address) => this.opINS(address),
-        () => this.byAbsoluteX(),
-        'ins $aaaa,x',
-      ), // ff
-    ];
+    const opcodes = new Array<CpuOpcode>(0x100);
+    for (let opcode = 0; opcode < opcodes.length; opcode += 1) {
+      const operation = CPU_OPCODE_OPERATION[opcode];
+      const plan = CPU_OPCODE_PLAN[opcode];
+      if (operation === undefined || plan === undefined) {
+        throw new RangeError(`Missing opcode metadata for $${hex(opcode, 2)}.`);
+      }
+
+      const mode = (plan >>> CPU_OPCODE_PLAN_MODE_SHIFT) & CPU_OPCODE_PLAN_MODE_MASK;
+      const access = (plan >>> CPU_OPCODE_PLAN_ACCESS_SHIFT) & CPU_OPCODE_PLAN_ACCESS_MASK;
+      const template = plan & CPU_OPCODE_PLAN_TEMPLATE_MASK;
+      const cycles = CPU_CYCLE_TEMPLATE_BASE_CYCLES[template];
+      const length = CPU_ADDRESS_MODE_LENGTH[mode];
+      if (cycles === undefined || length === undefined) {
+        throw new RangeError(`Invalid opcode plan for $${hex(opcode, 2)}.`);
+      }
+
+      opcodes[opcode] = new CpuOpcode(
+        cycles,
+        length,
+        this.createInstructionHandler(operation, mode, access),
+        this.createInstructionAddressingMode(mode),
+        this.createInstructionMnemonic(operation, mode),
+      );
+    }
+    return opcodes;
+  }
+
+  private createInstructionAddressingMode(mode: number): AddressingMode | null {
+    switch (mode) {
+      case CycleAddressMode.ABS:
+        return () => this.byAbsolute();
+      case CycleAddressMode.ABSX:
+        return () => this.byAbsoluteX();
+      case CycleAddressMode.ABSY:
+        return () => this.byAbsoluteY();
+      case CycleAddressMode.ACC:
+      case CycleAddressMode.IMP:
+        return null;
+      case CycleAddressMode.IMM:
+        return () => this.byImmediate();
+      case CycleAddressMode.IND:
+        return () => this.byIndirect();
+      case CycleAddressMode.INDX:
+        return () => this.byIndirectX();
+      case CycleAddressMode.INDY:
+        return () => this.byIndirectY();
+      case CycleAddressMode.REL:
+      case CycleAddressMode.ZP:
+        return () => this.byZeroPage();
+      case CycleAddressMode.ZPX:
+        return () => this.byZeroPageX();
+      case CycleAddressMode.ZPY:
+        return () => this.byZeroPageY();
+      default:
+        throw new RangeError(`Invalid CPU addressing mode ${mode}.`);
+    }
+  }
+
+  private createInstructionHandler(
+    operation: number,
+    mode: number,
+    access: number,
+  ): InstructionHandler {
+    switch (operation) {
+      case CycleOperation.ADC:
+        return (address) => this.opADC(address);
+      case CycleOperation.ALR:
+        return () => this.opALR();
+      case CycleOperation.ANC:
+        return () => this.opANC();
+      case CycleOperation.AND:
+        return (address) => this.opAND(address);
+      case CycleOperation.ARR:
+        return () => this.opARR();
+      case CycleOperation.ASL:
+        return mode === CycleAddressMode.ACC
+          ? () => this.opASL_A()
+          : (address) => this.opASL(address);
+      case CycleOperation.ASO:
+        return (address) => this.opASO(address);
+      case CycleOperation.AXA:
+        return (address) => this.opAXA(address);
+      case CycleOperation.AXS_STORE:
+        return (address) => this.opAXS(address);
+      case CycleOperation.BCC:
+        return () => this.opBCC();
+      case CycleOperation.BCS:
+        return () => this.opBCS();
+      case CycleOperation.BEQ:
+        return () => this.opBEQ();
+      case CycleOperation.BIT:
+        return (address) => this.opBIT(address);
+      case CycleOperation.BMI:
+        return () => this.opBMI();
+      case CycleOperation.BNE:
+        return () => this.opBNE();
+      case CycleOperation.BPL:
+        return () => this.opBPL();
+      case CycleOperation.BRK:
+        return () => this.opBRK();
+      case CycleOperation.BVC:
+        return () => this.opBVC();
+      case CycleOperation.BVS:
+        return () => this.opBVS();
+      case CycleOperation.CLC:
+        return () => this.opCLC();
+      case CycleOperation.CLD:
+        return () => this.opCLD();
+      case CycleOperation.CLI:
+        return () => this.opCLI();
+      case CycleOperation.CLV:
+        return () => this.opCLV();
+      case CycleOperation.CMP:
+        return (address) => this.opCMP(address);
+      case CycleOperation.CPX:
+        return (address) => this.opCPX(address);
+      case CycleOperation.CPY:
+        return (address) => this.opCPY(address);
+      case CycleOperation.DCM:
+        return (address) => this.opDCM(address);
+      case CycleOperation.DEC:
+        return (address) => this.opDEC(address);
+      case CycleOperation.DEX:
+        return () => this.opDEX();
+      case CycleOperation.DEY:
+        return () => this.opDEY();
+      case CycleOperation.EOR:
+        return (address) => this.opEOR(address);
+      case CycleOperation.INC:
+        return (address) => this.opINC(address);
+      case CycleOperation.INS:
+        return (address) => this.opINS(address);
+      case CycleOperation.INX:
+        return () => this.opINX();
+      case CycleOperation.INY:
+        return () => this.opINY();
+      case CycleOperation.JAM:
+        return () => this.opHLT();
+      case CycleOperation.JMP:
+        return (address) => this.opJMP(address);
+      case CycleOperation.JSR:
+        return (address) => this.opJSR(address);
+      case CycleOperation.LAS:
+        return (address) => this.opLAS(address);
+      case CycleOperation.LAX:
+        return (address) => this.opLAX(address);
+      case CycleOperation.LDA:
+        return (address) => this.opLDA(address);
+      case CycleOperation.LDX:
+        return (address) => this.opLDX(address);
+      case CycleOperation.LDY:
+        return (address) => this.opLDY(address);
+      case CycleOperation.LSE:
+        return (address) => this.opLSE(address);
+      case CycleOperation.LSR:
+        return mode === CycleAddressMode.ACC
+          ? () => this.opLSR_A()
+          : (address) => this.opLSR(address);
+      case CycleOperation.NOP:
+        return access === CycleMemoryAccess.NONE
+          ? () => this.opNOP()
+          : (address) => this.opUndocumentedNOP(address);
+      case CycleOperation.OAL:
+        return (address) => this.opOAL(address);
+      case CycleOperation.ORA:
+        return (address) => this.opORA(address);
+      case CycleOperation.PHA:
+        return () => this.opPHA();
+      case CycleOperation.PHP:
+        return () => this.opPHP();
+      case CycleOperation.PLA:
+        return () => this.opPLA();
+      case CycleOperation.PLP:
+        return () => this.opPLP();
+      case CycleOperation.RLA:
+        return (address) => this.opRLA(address);
+      case CycleOperation.ROL:
+        return mode === CycleAddressMode.ACC
+          ? () => this.opROL_A()
+          : (address) => this.opROL(address);
+      case CycleOperation.ROR:
+        return mode === CycleAddressMode.ACC
+          ? () => this.opROR_A()
+          : (address) => this.opROR(address);
+      case CycleOperation.RRA:
+        return (address) => this.opRRA(address);
+      case CycleOperation.RTI:
+        return () => this.opRTI();
+      case CycleOperation.RTS:
+        return () => this.opRTS();
+      case CycleOperation.SAX_SUBTRACT:
+        return (address) => this.opSAX(address);
+      case CycleOperation.SAY:
+        return (address) => this.opSAY(address);
+      case CycleOperation.SBC:
+        return (address) => this.opSBC(address);
+      case CycleOperation.SEC:
+        return () => this.opSEC();
+      case CycleOperation.SED:
+        return () => this.opSED();
+      case CycleOperation.SEI:
+        return () => this.opSEI();
+      case CycleOperation.STA:
+        return (address) => this.opSTA(address);
+      case CycleOperation.STX:
+        return (address) => this.opSTX(address);
+      case CycleOperation.STY:
+        return (address) => this.opSTY(address);
+      case CycleOperation.TAS:
+        return (address) => this.opTAS(address);
+      case CycleOperation.TAX:
+        return () => this.opTAX();
+      case CycleOperation.TAY:
+        return () => this.opTAY();
+      case CycleOperation.TSX:
+        return () => this.opTSX();
+      case CycleOperation.TXA:
+        return () => this.opTXA();
+      case CycleOperation.TXS:
+        return () => this.opTXS();
+      case CycleOperation.TYA:
+        return () => this.opTYA();
+      case CycleOperation.XAA:
+        return () => this.opXAA();
+      case CycleOperation.XAS:
+        return (address) => this.opXAS(address);
+      default:
+        throw new RangeError(`Invalid CPU operation ${operation}.`);
+    }
+  }
+
+  private createInstructionMnemonic(operation: number, mode: number): string {
+    const mnemonic = CPU_OPERATION_MNEMONIC[operation];
+    const operand = CPU_ADDRESS_MODE_OPERAND[mode];
+    if (mnemonic === undefined || operand === undefined) {
+      throw new RangeError(`Invalid disassembly metadata: operation ${operation}, mode ${mode}.`);
+    }
+    return operand.length === 0 ? mnemonic : `${mnemonic} ${operand}`;
   }
 
   private getTwoComplementTable(): Uint8Array {

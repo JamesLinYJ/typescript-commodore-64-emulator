@@ -18,13 +18,17 @@ import { PAL_VIDEO_STANDARD } from '../../src/video/palVideoStandard';
 
 class CountingCycleMachine implements Drive1541ClockedMachine {
   elapsedCycles = 0;
+  singleCycleCalls = 0;
+  batchCalls = 0;
 
   clockCycle(): number {
+    this.singleCycleCalls += 1;
     this.elapsedCycles += 1;
     return 1;
   }
 
   clockCycles(cycles: number): number {
+    this.batchCalls += 1;
     this.elapsedCycles += cycles;
     return cycles;
   }
@@ -74,5 +78,23 @@ describe('Drive1541ClockSynchronizer', () => {
     expect(synchronizer.targetCycles).toBe(0);
     expect(synchronizer.leadCycles).toBe(0);
     expect(machine.elapsedCycles).toBe(0);
+  });
+
+  it('keeps the fixed single-cycle phase path exactly equivalent to the checked batch API', () => {
+    const singleMachine = new CountingCycleMachine();
+    const batchMachine = new CountingCycleMachine();
+    const single = new Drive1541ClockSynchronizer(singleMachine);
+    const batch = new Drive1541ClockSynchronizer(batchMachine);
+    const hostCycles = 100_000;
+
+    for (let cycle = 0; cycle < hostCycles; cycle += 1) single.advanceHostCycle();
+    batch.advanceHostCycles(hostCycles);
+
+    expect(single.targetCycles).toBe(batch.targetCycles);
+    expect(single.phaseRemainder).toBe(batch.phaseRemainder);
+    expect(singleMachine.elapsedCycles).toBe(batchMachine.elapsedCycles);
+    expect(singleMachine.singleCycleCalls).toBe(single.targetCycles);
+    expect(singleMachine.batchCalls).toBe(0);
+    expect(batchMachine.batchCalls).toBe(1);
   });
 });

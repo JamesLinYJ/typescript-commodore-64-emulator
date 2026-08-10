@@ -45,8 +45,31 @@ export class Drive1541ClockSynchronizer implements C64ClockedPeripheral {
     return this.targetDriveCycles;
   }
 
+  get phaseRemainder(): number {
+    return this.hostClockRemainder;
+  }
+
   get leadCycles(): number {
     return this.machine.elapsedCycles - this.targetDriveCycles;
+  }
+
+  /**
+   * 推进一个固定主机周期。相位只做整数累加和阈值扣减，避免整机热路径重复参数
+   * 规范化、乘法、除法和取模；每个生成的 drive cycle 仍按因果顺序立即执行。
+   */
+  advanceHostCycle(): void {
+    const accumulatedNumerator = this.hostClockRemainder + DRIVE_1541_CLOCK.processorClockHz;
+    if (!Number.isSafeInteger(accumulatedNumerator)) {
+      throw new RangeError('1541 host clock phase exceeded the safe integer range.');
+    }
+
+    this.hostClockRemainder = accumulatedNumerator;
+    let generatedCycles = 0;
+    while (this.hostClockRemainder >= this.hostClockHz) {
+      this.hostClockRemainder -= this.hostClockHz;
+      generatedCycles += 1;
+    }
+    this.advanceDriveTarget(generatedCycles, true);
   }
 
   advanceHostCycles(cycles: number): void {
@@ -63,13 +86,24 @@ export class Drive1541ClockSynchronizer implements C64ClockedPeripheral {
 
     const generatedCycles = Math.floor(accumulatedNumerator / this.hostClockHz);
     this.hostClockRemainder = accumulatedNumerator % this.hostClockHz;
+    this.advanceDriveTarget(generatedCycles, false);
+  }
+
+  private advanceDriveTarget(generatedCycles: number, singleHostCycle: boolean): void {
     this.targetDriveCycles += generatedCycles;
     if (!Number.isSafeInteger(this.targetDriveCycles)) {
       throw new RangeError('1541 target clock exceeded the safe integer range.');
     }
 
     const cyclesToRun = this.targetDriveCycles - this.machine.elapsedCycles;
-    const elapsed = this.machine.clockCycles(cyclesToRun, false);
+    let elapsed = 0;
+    if (singleHostCycle) {
+      for (let cycle = 0; cycle < cyclesToRun; cycle += 1) {
+        elapsed += this.machine.clockCycle(false);
+      }
+    } else {
+      elapsed = this.machine.clockCycles(cyclesToRun, false);
+    }
     if (elapsed !== cyclesToRun) {
       throw new Error(
         `1541 CPU clock batch advanced by ${elapsed} cycles instead of ${cyclesToRun}.`,

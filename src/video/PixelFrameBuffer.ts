@@ -15,11 +15,18 @@ export class PixelFrameBuffer {
   constructor(
     readonly width: number,
     readonly height: number,
+    pixels?: Uint32Array,
   ) {
     if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
       throw new RangeError(`Pixel frame dimensions must be positive integers: ${width}x${height}.`);
     }
-    this.pixels = new Uint32Array(width * height);
+    const pixelCount = width * height;
+    if (pixels !== undefined && pixels.length !== pixelCount) {
+      throw new RangeError(
+        `Pixel storage length ${pixels.length} does not match frame size ${pixelCount}.`,
+      );
+    }
+    this.pixels = pixels ?? new Uint32Array(pixelCount);
   }
 
   clear(color = 0): void {

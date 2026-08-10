@@ -19,6 +19,7 @@
     "tools",
     "src/core/basicStartup.ts",
     "src/core/C64Machine.ts",
+    "src/core/PalFrameScheduler.ts",
     "src/core/CpuBusArbitrationInvariantError.ts",
     "src/core/cpu",
     "src/core/memory",
